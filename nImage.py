@@ -10,7 +10,7 @@ import copy
 
 
 class mvImage():
-    def __init__(self, path:str,in_memory=False,size=None,mode = None, source=None):
+    def __init__(self, path:str,in_memory=False,size=None,mode = None, source=None)->None:
         '''mvImage constructor
            Args:
                path -- path to image
@@ -26,22 +26,35 @@ class mvImage():
         self._size = size
         self._in_memory = in_memory
         self._mode = mode
+        
         if in_memory:
             if source is None:
                 self._content  = Image.open(path)
                 if size!=None:
-                    self._content = self._content.resize(size)
+                    self._content = self._content.resize(size, resample=Image.BICUBIC)
                 if mode!=None:
-                    self._content.convert(mode)
+                    self._content = self._content.convert(mode)
+
 
                 self._imarray = np.array(self._content)
+            
+            
             else:
-                self._content = source
+                print(type(source))
+                if type(source) == np.ndarray:
+                    print("hello")
+                    self._content = Image.fromarray(source)
+                else:
+                    self._content = source
                 if size!=None:
-                    self._content = self._content.resize(size)
+
+                      self._content = self._content.resize(size, resample=Image.BICUBIC)
+                if mode!=None:
+                    self._content = self._content.convert(mode)
 
                 #self._imarray = np.array(self._content)
-
+            self._size = self._content.size
+            #print(self._size)
 
     @property
     def content(self) -> Image:
@@ -51,7 +64,8 @@ class mvImage():
             else:
                 im = Image.open(self.path)
                 if self._size!=None:
-                    im = im.resize(self._size,Image.BICUBIC)
+                    im = im.resize(self._size,resample=Image.BICUBIC)
+                    im.save("g.png")
                 if self._mode!=None:
                     im = im.convert(self._mode)
             return im
@@ -59,15 +73,26 @@ class mvImage():
 
     @property
     def size(self):
-        return self._size
+        if self._in_memory:
+            return self._size
+        else:
+            return self.content.size
 
     @size.setter
     def size(self, value:Tuple[int,int]):
         if self._in_memory:
-            self._content = self.content.resize(value)
-            print("**************",self.content.size,value)
+            self._content = self.content.resize(value, Image.BICUBIC)
         self._size = value
 
+    @property
+    def width(self):
+        return self.size[0]
+
+    @property
+    def height(self):
+        return self.size[1]    
+    
+    
     @property
     def mode(self):
         return self._mode
@@ -75,7 +100,7 @@ class mvImage():
     @mode.setter
     def mode(self, value:str):
         if self._in_memory:
-            self.content.convert(value)
+            self._content = self.content.convert(value)
         self._mode = value
 
     @property
@@ -87,6 +112,14 @@ class mvImage():
             return u
            # print(z)
             #return (np.array(self.content) /255.0)
+    
+    def content_array_func(self, func):
+        if func is not None:
+            new_c = (np.array(func(self.content)))/255
+        else:
+            return self.imarray 
+        return new_c
+    
     @property
     def noisy_content(self):
         '''returns image after a set of random transformations, suitable for data augmentation'''

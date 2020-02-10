@@ -2,7 +2,7 @@ from typing import List,Tuple
 import glob
 import random
 from functools import reduce
-
+from PIL import Image
 import numpy as np
 from neuthink.nImage  import mvImage
 from neuthink.graph.basics import Graph,NodeList,Node
@@ -115,35 +115,105 @@ class MetaImage(object):
         self.model.last_call = target
         return self
 
-    def Vectorize(self,  target=None, source=None):
+    def UnVectorize(self, source=None, target=None):
+        if self.model.mode=="train":
+            return
+        if source in self.model.metatensor:
+            data = self.model.metatensor[source]
+
+            if self.model.device is not None:
+                data= data.cpu()
+            
+            data = data.detach()
+            if len(data.shape)==4:
+                data = data.squeeze(1)
+            data = data.numpy()
+            minrange = min(self.model.batch_size, len(self.model)-self.model.index)
+            for i in range(self.model.index, self.model.index+minrange):
+                self.model[i][target]=mvImage("",source=Image.fromarray((data[i-self.model.index]*255).astype('float32')),in_memory=True)
+            self.res = [x[target] for x in self.model[self.model.index: (self.model.index+minrange)]]
+            self.model.result = self.res
+        if self.model.mode=='design':
+            self.model.record("Image.UnVectorize",['source','target'],[source,target])
+        return self.model
+
+
+    def Vectorize(self,  target=None, source=None,channel_id=-1, precision="normal", prefunc="None"):
         '''Vectorizes image '''
         if source is None:
             source = self.model.last_call
         if target is None:
             target = "image_tensor"
+        
 
+        
         if self.model.mode=='design':
             #if mode is design, limit number of elements to process
             print("INFO: Design mode, vectorizing 50 elements to test")
             maxnodes = min(50,len(self.model))
+            if prefunc is not None:
+                self.prefunc = prefunc
+            else:
+                self.prefunc = None
             nodes = self.model[0:maxnodes]
-        if self.model.mode=='train':
-            nodes = self.model[self.model.index:self.model.index+self.model.batch_size]
-        if self.model.mode=='predict':
-           #nodes = self.model
-            nodes = self.model[self.model.index:self.model.index+self.model.batch_size]
+            self.model.record("Image.Vectorize",['source','target','channel_id','precision','prefunc'],[source,target,channel_id, precision,str(prefunc)])
+#        print("cnahhe",channel_id)
 
-        if len(self.model)>0:
-         for x in nodes:
-            x[target] = torch.from_numpy(x[source].imarray).float()
+        if len(self.model)>0 and source in self.model[0]:
+            if self.model.mode=='train':
+                nodes = self.model[self.model.index:self.model.index+self.model.batch_size]
+            if self.model.mode=='predict' or self.model.mode=='eval':
+            #nodes = self.model
+                nodes = self.model[self.model.index:self.model.index+self.model.batch_size]
 
-         res = [x[target] for x in nodes]
-         self.model.metatensor[target] = torch.stack(res,dim=0)
-         self.model.res = self.model.metatensor[target]
+            if len(self.model)>0:
 
-        self.model.record("Image.Vectorize",['source','target'],[source,target])
-        self.model.last_call = target
+            z = []
+
+            for x in nodes:
+                if self.prefunc is not None and prefunc!="None" and self.model.mode=='train':
+                  z.append(torch.from_numpy(x[source].imarray).float())
+                else:
+                  z.append(torch.from_numpy(x[source].content_array_func(self.prefunc)).float())
+                             
+            if channel_id != -1:
+                for x in z:
+                    x[target] = x['target'][:,:,channel_id]
+        
+
+#            res = [x[target] for x in nodes]
+            res = z
+            self.model.metatensor[target] = torch.stack(res,dim=0)
+            if self.model.device is not None:
+              self.model.metatensor[target] = self.model.metatensor[target].to(self.model.device)
+#            print(precision)
+            if precision!="normal":
+#                print("HALFPREC")
+                self.model.metatensor[target] = self.model.metatensor[target].half()
+
+            self.model.res = self.model.metatensor[target]
+
+            
+            self.model.last_call = target
         return self
+
+    ##mass processing functions, that are not recorded/tracked
+    def MakeSubimages(self, size:int, stride:int, source='image'):
+        ''' makes new nodelist that consists of subimages of all image'''
+        import neuthink.metagraph as m # can't import before, will get circular import
+        if source is None:
+            source = self.model.last_call
+        newnodes = m.dNodeList(self.model.parent_graph)
+        for x in self.model:
+            subimages = MakeSubimages(x[source], stride, size)
+            
+            for im in subimages:
+                imnode = Node(self.model.parent_graph,{'type':'subimage','image':im})
+                newnodes.append(imnode)
+                x.Connect(imnode)
+        return newnodes
+
+
 
 
 
@@ -173,15 +243,24 @@ def LoadPDF(path, in_memory=False):
     return image_list
     
 
+def Save(data, prefix:str, names=None, imformat:str='png'):
+    for i,x in enumerate(data):
+        name = x[names] if names is not None else prefix+str(i)+'.'+imformat
+        x['image'].Save(name, imformat=imformat)
+
+
+
 def Load(path:str, in_memory = False, patterns = ['png','jpg','jpeg'], target_class='target_class'):
         import neuthink.metagraph as m # can't import before, will get circular import
         def make_list(image_names, image_list, patterns):
 
             for iname in image_names:
-            #    print(iname)
+                print(iname)
                 images, image_class = iname
                 if len(image_class)>0:
+                   
                    image_class = image_class.split('/')[-2]
+                #image_name = image_class.
                 image_list = image_list + [Node(graph,{"image":mvImage(x,in_memory = in_memory),target_class:image_class.lower(),'type':'image'}) for x in images]
             return image_list
 
@@ -256,12 +335,7 @@ def JoinBoundingBoxes(scene:NodeList, min_distance=None, comp_class=None):
         scene = scene + newnodes
     #remove
     scene.Match({"_state_delete":'yes'}).Delete()
-    return 
-
-
-
-
-
+    return
 
 
 def BasicSceneGraphParser(image_node:Node, components:List[Tuple[Tuple[int,int],Tuple[int,int],mvImage]]) -> Node:
@@ -295,6 +369,17 @@ def BasicSceneGraphParser(image_node:Node, components:List[Tuple[Tuple[int,int],
     return root_node
     
 
+def MakeSubimages(image:mvImage,stride:int, size:int)->List[mvImage]:
+    '''takes one big image and splits it into subimages of given size using specified stride'''
+    newimages=[]
+   # print(image.width)
+    for i in range(0,int(image.width),stride):
+        for j in range(0,int(image.height),stride):
+            
+            im2 = mvImage("",in_memory=True,source=image.content.crop((i, j, i+size,  j+size)))
+            newimages.append(im2)
+    return newimages
 
+    
 
 
