@@ -16,6 +16,7 @@ class MetaImage(object):
         super(MetaImage, self).__init__()
         self.model = ParentModel
         self.graph = ParentModel.parent_graph
+        self.prefunc = None
 
     def precision(self, name):
         pname ="target_class#p"
@@ -151,7 +152,7 @@ class MetaImage(object):
             #if mode is design, limit number of elements to process
             print("INFO: Design mode, vectorizing 50 elements to test")
             maxnodes = min(50,len(self.model))
-            if prefunc is not None:
+            if prefunc != "None":
                 self.prefunc = prefunc
             else:
                 self.prefunc = None
@@ -168,33 +169,44 @@ class MetaImage(object):
 
             if len(self.model)>0:
 
-            z = []
+             z = []
 
-            for x in nodes:
-                if self.prefunc is not None and prefunc!="None" and self.model.mode=='train':
-                  z.append(torch.from_numpy(x[source].imarray).float())
-                else:
-                  z.append(torch.from_numpy(x[source].content_array_func(self.prefunc)).float())
+             if self.prefunc is not None and prefunc!="None" and self.model.mode=='train':
+              # print("PERF")
+               for x in nodes:
+                   z.append((x[source].content_array_func(self.prefunc)))
+             else:
+               for x in nodes:
+                  z.append((x[source].imarray))
+
+             z1=[]
                              
-            if channel_id != -1:
+             if channel_id != -1:
+#                print("CHANNEL",channel_id)
                 for x in z:
-                    x[target] = x['target'][:,:,channel_id]
+                    z1.append(torch.from_numpy(x[:,:,channel_id]).float())
+             else:
+                for x in z:
+                    z1.append(torch.from_numpy(x).float())
+             z = z1
+            
         
 
 #            res = [x[target] for x in nodes]
-            res = z
-            self.model.metatensor[target] = torch.stack(res,dim=0)
-            if self.model.device is not None:
+             res = z
+#             print(z)
+             self.model.metatensor[target] = torch.stack(res,dim=0)
+             if self.model.device is not None:
               self.model.metatensor[target] = self.model.metatensor[target].to(self.model.device)
 #            print(precision)
-            if precision!="normal":
+             if precision!="normal" and self.model.mode!="design":
 #                print("HALFPREC")
                 self.model.metatensor[target] = self.model.metatensor[target].half()
 
-            self.model.res = self.model.metatensor[target]
+             self.model.res = self.model.metatensor[target]
 
             
-            self.model.last_call = target
+             self.model.last_call = target
         return self
 
     ##mass processing functions, that are not recorded/tracked
@@ -255,7 +267,7 @@ def Load(path:str, in_memory = False, patterns = ['png','jpg','jpeg'], target_cl
         def make_list(image_names, image_list, patterns):
 
             for iname in image_names:
-                print(iname)
+            #    print(iname)
                 images, image_class = iname
                 if len(image_class)>0:
                    
