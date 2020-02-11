@@ -31,7 +31,7 @@ except:
 from neuthink.graph.basics import Node,NodeList,Graph
 from neuthink.nImage import  mvImage
 import neuthink.metaimage as mimage
-import neuthink.metacluster as mcluster
+#import neuthink.metacluster as mcluster
 import neuthink.metatext
 from neuthink.display import display_comp_status
 
@@ -260,7 +260,7 @@ class dNodeList(TrackedNodeList,torch.nn.Module):
         self.parent_graph = parent_graph
         self.Image = mimage.MetaImage(self)
         self.Text = neuthink.metatext.MetaText(self)
-        self.Cluster = mcluster.MetaCluster(self)
+    #    self.Cluster = mcluster.MetaCluster(self)
         self.mode = "design"
         self.loadfunc=None
         self.code:str = ""
