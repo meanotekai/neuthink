@@ -3,6 +3,7 @@
 import types
 import sys
 from math import log
+from typing import Generic, Mapping,Dict,TypeVar
 
 
 
@@ -144,9 +145,10 @@ class NodeList(list):
         return match_list
 
     def Match(self,node):
-
+        proc = False
         if type(node) is dict or type(node) is Node:
             match_list = NodeList(self.parent_graph)
+            proc = True
             for x in self:
                 match = self.__matchnode(node, x)
                 if match:
@@ -154,11 +156,13 @@ class NodeList(list):
 
         if type(node) is types.FunctionType:
             match_list = NodeList(self.parent_graph)
+            proc = True
             for x in self:
                 match = node(x)
                 if match:
                     match_list.append(x)
-
+        if not proc:
+            print("Error: unsupported type input for Match function", type(node))
 
         return match_list
 
@@ -330,7 +334,7 @@ class NodeList(list):
             else:
                 section[par_ch['имя']] = [ch]
         return section
-    
+
     def __add__(self,new):
         _list = NodeList(self.parent_graph)
         for x in self:
@@ -338,11 +342,13 @@ class NodeList(list):
         for x in new:
             _list.append(x)
         return _list
-        
 
-class Node():
+KT = TypeVar('KT')
+VT = TypeVar('VT')
+
+class Node(Mapping[KT,VT]):
     '''Node class represents a single graph node'''
-    def __init__(self, parent_graph, dic, makenew=True,make_or_fetch=False):
+    def __init__(self, parent_graph, dic:Dict[KT,VT], makenew=True,make_or_fetch=False):
         '''node constructor
 
         Args:
@@ -368,7 +374,7 @@ class Node():
     def __iter__(self):
         return self.dict.__iter__()
 
-    def __getitem__(self, item_name):
+    def __getitem__(self, item_name:KT)->VT:
         if (item_name == 'id'):
             return str(self.dict[item_name])
         return self.dict[item_name]
@@ -385,6 +391,18 @@ class Node():
 
     def __repr__(self):
         return str(self)
+
+    def __len__(self):
+        return len(self.dict)
+
+    #def __eq__(self):
+    #    return self.dict.__eq__()
+
+    def __hash__(self):
+            return int(id(self)/16)
+
+    def keys(self):
+        return self.dict.keys()
 
     def Add(self, node):
         '''Add new node as child to this node (adds directional connection)
@@ -428,7 +446,7 @@ class Node():
             return True
         else:
             return False
-    
+
 
     def AddParent(self, node):
         '''Add new node as child to this node (adds directional connection)
@@ -489,11 +507,14 @@ class Node():
 
     def NotEmpty(self):
         return self["type"] != "empty"
+    
+    def IsEmpty(self):
+        return self["type"] == "empty"
 
-    def Connect(self, target_node):
+    def Connect(self, target_node, label=None):
         '''Adds directed connection between this node and target node'''
-        self.parent_graph.AddEdge(self, target_node)
-        
+        self.parent_graph.AddEdge(self, target_node, label)
+
     def Connect_branch(self, target_node,branch):
         self.parent_graph.MatchBranch(self, target_node,branch)
 
@@ -501,37 +522,37 @@ class Node():
         '''Adds directed connection between this node and target node'''
         self.parent_graph.AddEdge2(self, target_node,ls_ansvers)
 
-    def ConnectsTo(self):
+    def ConnectsTo(self,label=""):
         '''Return all nodes that are connected to this node'''
-        return self.parent_graph.ConnectsTo(self)
+        return self.parent_graph.ConnectsTo(self,label)
 
-    def ConnectedWith(self):
+    def ConnectedWith(self, label=""):
         '''Return all nodes that are connected to this node'''
-        return self.parent_graph.ConnectedWith(self)
+        return self.parent_graph.ConnectedWith(self,label)
 
-    def FirstConnected(self):
+    def FirstConnected(self,label=""):
         '''Return first node connected to this node'''
-        return self.parent_graph.ConnectsTo(self)[0]
+        return self.parent_graph.ConnectsTo(self,label)[0]
 
-    def Children(self, cond={}):
+    def Children(self, cond={},label=""):
         '''Return all nodes that are connected to this node and
         satisfying condition <cond> that can be dictionary or bool function'''
-        all_children = self.ConnectsTo()
+        all_children = self.ConnectsTo(label)
         return all_children.Match(cond)
 
 
-    def Parents(self, cond={}):
+    def Parents(self, cond={}, label=""):
         '''Return all nodes that are connected to this node'''
-        all_parents= self.ConnectedWith()
+        all_parents= self.ConnectedWith(label)
         return all_parents.Match(cond)
 
 
-    def Child(self, condition):
-        return self.Children(condition).First()
+    def Child(self, condition, label=""):
+        return self.Children(condition,label=label).First()
 
 
-    def Parent(self, condition):
-        return self.Parents(condition).First()
+    def Parent(self, condition, label=""):
+        return self.Parents(condition,label=label).First()
 
 
     def Inc(self,feature,amount):
@@ -618,13 +639,14 @@ class Graph():
         self.nodes = []
         self.edges_parent = {}
         self.edges = {}
+        self.relations = {}
         self.last_id = 0
         self.nodes.append(Node(self,{"type":"empty"}))
 
     def AllNodes(self)->NodeList:
         """Возвращает все узлы в графе"""
         return self.Match({})
-    
+
     def NodesCount(self)->int:
         """Возвращает целочисленное количество узлов в графе"""
         return self.AllNodes().Count()
@@ -636,7 +658,7 @@ class Graph():
         self.nodes.append(node)
         return node
 
-    def AddEdge(self, node1, node2):
+    def AddEdge(self, node1, node2, label:str=None):
        # print('ADDEDGE',node1, node2)
         if node1 in self.edges:
             self.edges[node1].append(node2)
@@ -648,25 +670,35 @@ class Graph():
 
         if node2 in self.edges_parent:
             self.edges_parent[node2].append(node1)
-        else:            
+        else:
             lst1 = NodeList(self)
             lst1.append(node1)
-            self.edges_parent[node2] = lst1      
-        
+            self.edges_parent[node2] = lst1
+
+        # Именование
+        self.relations[node1,node2] = label
 
 
-    def ConnectsTo(self,node):
+
+    def ConnectsTo(self,node, label:str=""):
         '''finds all nodes in the graph that are connected to selected node'''
         if node in self.edges:
-            return self.edges[node]
+            if label != "":
+                return NodeList(self, [x for x in self.edges[node] if (node,x) in self.relations and self.relations[(node,x)] == label])
+            else:
+                return self.edges[node]
         else:
             return NodeList(self)
 
 
-    def ConnectedWith(self,node):
+
+    def ConnectedWith(self, node, label:str=""):
         """finds the nodes with which the selected node is associated"""
         if node in self.edges_parent:
-            return self.edges_parent[node]
+            if label != "":
+                return NodeList(self, [x for x in self.edges_parent[node] if (x,node) in self.relations and self.relations[(x,node)] == label])
+            else:
+                return self.edges_parent[node]
         else:
             return NodeList(self)
 
@@ -682,15 +714,26 @@ class Graph():
             for el in self.edges[key]:
                 if el==node:
                     self.edges[key].remove(el)
+        for pair in self.relations:
+            if node in pair:
+                del self.relations[pair]
 
-    def DetachNode(self,node):
+    def DetachNode(self,node, label=""):
         for x in self.edges:
             if node in x:
                x.remove(node)
 
         if node in self.edges:
            del self.edges[node]
-        
+
+        for pair in self.relations:
+            if label != "":
+                if node in pair and self.relations[pair] == label:
+                    del self.relations[pair]
+            else:
+                if node in pair:
+                    del self.relations[pair]
+
 
 
     def __matchnode(self,node1, node2):
@@ -757,4 +800,3 @@ class Graph():
                 if match:
                     match_list.append(x)
         return match_list
-
