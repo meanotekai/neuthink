@@ -299,19 +299,18 @@ class dNodeList(TrackedNodeList,torch.nn.Module):
 
         if self.mode=='design':
             self.record("tParent",[],[])
-            self.batch_size = 1 # temporary hack
+            #self.batch_size = 1 # temporary hack
         return self
 
-    def tChild(self):
+    def tChild(self,source={}):
         if len(self)>0:
             if self.PointerNode is None:
                 self.PointerNode = self[self.index]
-            self.PointerNode = self.PointerNode.Child({})
+            self.PointerNode = self.PointerNode.Child(source)
         
         if self.mode=='design':
-            self.record("tChild",[],[])
-            self.batch_size = 1 # temporary hack
-     
+            self.record("tChild",['source'],[source])
+  
         return self
 
 
@@ -389,6 +388,10 @@ class dNodeList(TrackedNodeList,torch.nn.Module):
              elif type(x[1]) is list:
                 arg_format = "["+ ",".join(["'" +y +"'" for y in x[1]]) + "]"
                 call = call + x[0] + '=' + arg_format +','
+             elif type(x[1]) is dict:
+                arg_format = str(x[1])
+                call = call + x[0] + '=' + arg_format +','
+
              else:
                 call = call + x[0] + '=' + str(x[1]) +','
          if call[-1]==',':
@@ -467,6 +470,28 @@ class dNodeList(TrackedNodeList,torch.nn.Module):
            self.res = m(input_data)
            self.metatensor[target] = self.res
         self.last_call = target
+        return self
+
+    def Pool1D(self,source=None,target=None, kernel_size=4, stride=None, padding=0, name=None):
+        '''1D max pooling layer'''
+        if source is None:
+            source = self.last_call
+        if target==None:
+           target = source
+        m = None
+        if self.mode=="design":
+          if name is None and not target in self.layers:
+            m = nn.MaxPool1d(kernel_size, stride=stride, padding=padding)
+            self.design_register_layer(name,target,'Pool2D',m)
+            self.record("Pool1D",['kernel_size','source','target', 'padding','stride'],[kernel_size,source,target,padding,stride])
+        if m is None:
+          m = self.get_stored_layer(name,target) 
+        if len(self)>0:
+           input_data = self.metatensor[source]
+           self.res = m(input_data)
+           self.metatensor[target] = self.res
+        self.last_call = target
+        return self
 
     def Pool1D(self,source=None,target=None, kernel_size=4, stride=None, padding=0, name=None):
         '''1D max pooling layer'''
@@ -599,6 +624,56 @@ class dNodeList(TrackedNodeList,torch.nn.Module):
         return self
 
 
+<<<<<<< HEAD
+    def Conv1D(self, kernel_size:int=5,nmaps:int=1,padding:int=0,stride:int=1, input_size=None, target=None, source=None,in_channels=None,name=None):
+        ''' 1D convolution layer '''
+        if source is None:
+            source = self.last_call
+        if target==None:
+           target = source
+        #handles proper reshape
+    
+        if source in self.metatensor and len(self)>0:
+           if source in self.layers:
+             prev_layer = self.layers[source]
+    #        print(type(prev_layer))
+             if type(prev_layer) is torch.nn.LSTM:
+                self.metatensor[source] = self.metatensor[source].contiguous().view(self.metatensor[source].size()[1], -1)
+     #      print("SHAPE", len(self.metatensor[source].shape))
+     #      if len(self.metatensor[source].shape)==2:
+     #          self.metatensor[source]= self.metatensor[source].unsqueeze_(1)
+        m = None
+
+        if self.mode=="design":
+           #if input_size is None:
+           #    input_size = tin_size(self.metatensor[source])
+           if in_channels is None:
+            in_channels= 1 if len(self.metatensor[source].shape)==2 else self.metatensor[source].shape[1]
+           print(in_channels)
+
+           if name is None and not target in self.layers:
+            m = nn.Conv1d(in_channels, nmaps, kernel_size, stride=stride, padding=padding)  
+            self.design_register_layer(name,target,'Conv1D', m)
+         
+           self.record("Conv1D",['kernel_size','source','target', 'nmaps','padding','stride','in_channels'],[kernel_size,source,target,nmaps,padding,stride,in_channels])
+
+        if m is None:
+            m = self.get_stored_layer(name,target) 
+
+        if len(self)>0:
+           input_data = self.metatensor[source]
+           if len(input_data.shape)==2:
+               input_data = input_data.unsqueeze(1)
+
+         #  print(input_data.shape)
+           self.res = m(input_data)
+
+           self.metatensor[target] = self.res
+        self.last_call = target
+        return self
+
+
+=======
     def Dropout(self,p=0.5,source=None,target=None, name=None):
         ''' dropout layer '''
         if source is None: source = self.last_call
@@ -619,6 +694,7 @@ class dNodeList(TrackedNodeList,torch.nn.Module):
            self.metatensor[target] = self.res 
         self.last_call = target
         return self
+>>>>>>> a4bfb9dcffec0cef5fad2cf27c5540e6ccb51de6
 
     def Linear(self, size:int = 50, input_size=None, target=None, source=None, data_parallel=False):
         ''' linear layer '''
@@ -1595,10 +1671,11 @@ class dNodeList(TrackedNodeList,torch.nn.Module):
             print("c",class_target)
             if class_target!="_seq_model":
                print(class_target,"target")
-               if cmode!="span":
-                class_vector = self.vectorize_classes(self[self.index:self.index+self.batch_size], class_target)
-               else:
-                class_vector = self.vectorize_span(self[self.index:self.index+self.batch_size], class_target, self.classes, self.index)
+               if len(self)> 0:
+                if cmode!="span":
+                    class_vector = self.vectorize_classes(self[self.index:self.index+self.batch_size], class_target)
+                else:
+                    class_vector = self.vectorize_span(self[self.index:self.index+self.batch_size], class_target, self.classes, self.index)
         #  
             else:
                if len(self)>0:
@@ -1629,6 +1706,7 @@ class dNodeList(TrackedNodeList,torch.nn.Module):
                if cmode!="span":
                 class_vector = self.vectorize_classes(self[self.index:self.index+self.batch_size], class_target)
                else:
+                #print('All paragraphs',self[self.index:self.index+20])
                 class_vector = self.vectorize_span(self[self.index:self.index+self.batch_size], class_target, self.classes, self.index)
         #       print(class_vector.shape)
             else:
@@ -1679,14 +1757,12 @@ class dNodeList(TrackedNodeList,torch.nn.Module):
              for j,x in enumerate(self.res):
                 if cmode!='span':
                  self[i][target] = x
-                 
                 
                 else:
                  self[i][target] = 'other'
                  self.result[j] = 'none'
          #        print(self.result[j])
                 # print("HEELL")
-               # self[i][target+'vector'] = nx[j]
 #                print(x,target,i)
                 i = i + 1
             except:
@@ -1755,9 +1831,10 @@ class dNodeList(TrackedNodeList,torch.nn.Module):
             #print(i)
             try:
              for j,x in enumerate(self.res):
+                self[i][target+'vector'] = nx[j]
                 if cmode!='span':
                  self[i][target] = x
-                 print("HHHH")
+                 #print("HHHH")
                 else:
                  self[i][target] = 'other'
                  self.result[j]='none'
@@ -1766,7 +1843,7 @@ class dNodeList(TrackedNodeList,torch.nn.Module):
 #                print(x,target,i)
                 i = i + 1
             except:
-                #print(traceback.format_exc())
+                print(traceback.format_exc())
                 pass
 #                
             if cmode=='span':
@@ -2281,12 +2358,12 @@ class dNodeList(TrackedNodeList,torch.nn.Module):
               return self
            if dtype is np.ndarray:
                 print("Vec_nump")
-                self.Vectorizenumpy(source=source, target=target)
+                self.Vectorizenumpy(source=source)
 
                 if not target in self[0]:
-                   self.Linear(size=size, target=target).Sigmoid()
+                   self.Linear(size=size,target=target).Sigmoid()
                 else:
-                   self.Classify(class_target=target,target='dMap1')
+                   self.Classify(source=source, class_target=target,target='dMap1')
                    self.Rename(source='dMap1',target=target)
                 return self
 
@@ -2699,7 +2776,14 @@ def _compile(model:dNodeList, opt="Adam", size=50, lr=0.01,avg_steps = None,thre
         optimizer.zero_grad()
         model.Run()
         batch_error = model.loss
+<<<<<<< HEAD
+     #   print(type(batch_error))
+     #   print(batch_error)
+     #   print("**************")
+        torch.nn.utils.clip_grad_norm(model.parameters(),1)
+=======
         torch.nn.utils.clip_grad_norm(model.parameters(),clip_grad)
+>>>>>>> a4bfb9dcffec0cef5fad2cf27c5540e6ccb51de6
         #batch_error = batch_error.mean()
 #        v = batch_error.detach().item()
 
@@ -2732,7 +2816,7 @@ def _compile(model:dNodeList, opt="Adam", size=50, lr=0.01,avg_steps = None,thre
         display_comp_status(counter, batch_error.detach().item(), error, test_f1, best_loss, best_f1, lr,test_accuracy=accuracy, best_accuracy = best_accuracy,train_moving_loss=merror)
         counter = counter + 1
         moving_avg = moving_avg + batch_error.detach().item()
-        batch_error = 0
+       # batch_error = 0
 
         if counter > avg_steps:
     #       if mixed_precision:
