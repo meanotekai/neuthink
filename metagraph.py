@@ -624,7 +624,6 @@ class dNodeList(TrackedNodeList,torch.nn.Module):
         return self
 
 
-<<<<<<< HEAD
     def Conv1D(self, kernel_size:int=5,nmaps:int=1,padding:int=0,stride:int=1, input_size=None, target=None, source=None,in_channels=None,name=None):
         ''' 1D convolution layer '''
         if source is None:
@@ -673,7 +672,6 @@ class dNodeList(TrackedNodeList,torch.nn.Module):
         return self
 
 
-=======
     def Dropout(self,p=0.5,source=None,target=None, name=None):
         ''' dropout layer '''
         if source is None: source = self.last_call
@@ -2776,14 +2774,8 @@ def _compile(model:dNodeList, opt="Adam", size=50, lr=0.01,avg_steps = None,thre
         optimizer.zero_grad()
         model.Run()
         batch_error = model.loss
-<<<<<<< HEAD
-     #   print(type(batch_error))
-     #   print(batch_error)
-     #   print("**************")
-        torch.nn.utils.clip_grad_norm(model.parameters(),1)
-=======
+
         torch.nn.utils.clip_grad_norm(model.parameters(),clip_grad)
->>>>>>> a4bfb9dcffec0cef5fad2cf27c5540e6ccb51de6
         #batch_error = batch_error.mean()
 #        v = batch_error.detach().item()
 
