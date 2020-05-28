@@ -692,7 +692,7 @@ class dNodeList(TrackedNodeList,torch.nn.Module):
            self.metatensor[target] = self.res 
         self.last_call = target
         return self
->>>>>>> a4bfb9dcffec0cef5fad2cf27c5540e6ccb51de6
+
 
     def Linear(self, size:int = 50, input_size=None, target=None, source=None, data_parallel=False):
         ''' linear layer '''
