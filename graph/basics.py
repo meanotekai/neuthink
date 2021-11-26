@@ -3,8 +3,9 @@
 import types
 import sys
 from math import log
-from typing import Generic, Mapping,Dict,TypeVar
-
+from typing import Generic, Mapping,Dict,TypeVar, Optional, Union, Any
+from neuthink import functional as fp
+import csv
 
 
 def dextend(dic,field,unit):
@@ -15,9 +16,16 @@ def dextend(dic,field,unit):
 
 
 class NodeList(list):
-    def __init__(self, parent_graph, *args):
+    def __init__(self, parent_graph, nodes=None, *args):
         list.__init__(self, *args)
         self.parent_graph = parent_graph
+        if nodes!=None:
+           for x in nodes:
+               if type(x)==dict:
+                  q = Node(parent_graph,x)
+               else:
+                  q = x
+               self.append(q)
 
     def __matchnode(self,node1, node2):
         is_match = True
@@ -32,6 +40,8 @@ class NodeList(list):
         return is_match
 
     def __getitem__(self, given):
+        if type(given) is str:
+            return [x[given] for x in self]
         if isinstance(given, slice):
             # do your handling for a slice object:
             return NodeList(self.parent_graph, list.__getitem__(self, given))
@@ -39,7 +49,14 @@ class NodeList(list):
             # Do your handling for a plain index
             return list.__getitem__(self, given)
 
-    def First(self):
+    def __setitem__(self, key, newvalue):
+        if type(key) is str:
+            for x in self:
+                x[key] = newvalue
+        else:
+            return list.__setitem__(self, key, newvalue)
+
+    def First(self) ->  'Node[str, Any]':
         if len(self)>0:
             return self[0]
         else:
@@ -56,6 +73,10 @@ class NodeList(list):
            x.Set(field,value)
 
        return self
+    
+    def Get(self, field, default):
+       if field in self:
+          return self[field]
 
     def Detach(self,node):
        for x in self:
@@ -63,12 +84,29 @@ class NodeList(list):
 
        return self
 
+    def Children(self, cond)->'NodeList':
+        '''nodes that are direct childrens of all nodes in nodelist
+        satisfying condition cond'''
+        result = NodeList(self.parent_graph)
+        for x in self:
+           result = result + x.Children(cond)
+        return result
+
+    def Parents(self, cond):
+        '''nodes that are direct parents of all nodes in nodelist
+        satisfying condition cond'''
+        result = NodeList(self.parent_graph)
+        for x in self:
+           result  = result + x.Parents(cond)
+        return result
+
+
     def children_all(self, cond={}):
         '''Return all nodes that are connected to this node and
         satisfying condition <cond> that can be dictionary or bool function'''
         if len(self) == 1:
             all_children = self[-1].ConnectsTo()
-            return all_children.Match(cond)
+            return children_all.Match(cond)
         else:
             res = self.parent_graph.Match(cond)
             return res
@@ -80,12 +118,20 @@ class NodeList(list):
        return self
 
     def HasChild(self, node):
-        result = []
+        result = NodeList(self.parent_graph)
         for x in self:
-            people = x.children(node)
-            if people:
+            people = x.Children(node)
+            if len(people)>0:
                 result.append(x)
-        return result
+        return NodeList(self,result)
+
+    def HasParent(self, node)->'NodeList':
+        result = NodeList(self.parent_graph)
+        for x in self:
+            people = x.Parents(node)
+            if len(people)>0:
+                result.append(x)
+        return NodeList(self,result)
 
     def Distinct(self, node_property):
         '''Returns list of distinct values of specified node property'''
@@ -95,6 +141,11 @@ class NodeList(list):
                 d[x[node_property]] = 1
         result = [x for x in d if x != '']
         return result
+    
+    def Values(self, node_property):
+        '''Returns list values of the specified field for each node in the list'''
+        result = [node[node_property] for node in self if node_property in node]
+        return result
 
     def MatchOne(self,node):
         return self.Match(node).First()
@@ -102,12 +153,24 @@ class NodeList(list):
 
     def Largest(self, feature):
         '''Find node with the lagrest value of specified property'''
-        maxval = -100000
-        curnode = {}
+        maxval = -100000000000
+        curnode = self.parent_graph.Empty()
         for x in self:
             if feature in x:
                 if float(x[feature]) > maxval:
                     maxval = float(x[feature])
+                    curnode = x
+        return curnode
+
+
+    def Smallest(self, feature):
+        '''Find node with the lagrest value of specified property'''
+        minval = 1000000000000
+        curnode = {}
+        for x in self:
+            if feature in x:
+                if float(x[feature]) < minval:
+                    minval = float(x[feature])
                     curnode = x
         return curnode
 
@@ -122,6 +185,16 @@ class NodeList(list):
 
         return results
 
+    def Mapi(self, func,source,target):
+
+        for i,x in enumerate(self):
+            x[target] = func(x[source],i,self)
+        return self
+
+    def Map(self, func, source, target):
+        for x in self:
+             x[target] = func(x[source])
+        return self
 
     def Higher(self, feature, value):
         '''Find nodes with the property higher then value'''
@@ -133,6 +206,19 @@ class NodeList(list):
                     results.append(x)
 
         return results
+        
+    def Interval(self, feature, value_min, value_max):
+        data = [x for x in self if (feature in x) and (float(x[feature]) > value_min and float(x[feature]) < value_max)]
+        results = NodeList(self.parent_graph, data)
+        return results
+
+    def Match2Node2(self, node1, node2):
+        """ Получает для каждого node1 список детей типа node2 """
+        nodes1 = self.Match(node1)
+        result = {}
+        for node in nodes1:
+            result[node] = node.Children(node2)
+        return result
 
     def NotMatch(self,node):
 
@@ -166,16 +252,16 @@ class NodeList(list):
 
         return match_list
 
-    def NotEmpty(self):
+    def NotEmpty(self)->bool:
         return len(self) > 0
 
-    def Empty(self):
+    def Empty(self)->bool:
         return len(self) == 0
 
-    def Count(self):
+    def Count(self)->int:
         return len(self)
 
-    def sum(self, node_property):
+    def Sum(self, node_property:str)->float:
         # функция складывает значения всех полей свойства node_property
         # функция полезна, елси нужно посчитать количество чего-либо
         d = 0.0
@@ -184,7 +270,7 @@ class NodeList(list):
                 d += x[node_property]
         return d
 
-    def GroupBy(self,field_name):
+    def GroupBy(self,field_name,add_field_name:bool=True):
       #группирует NodeList по указанному полю
       field_name = (field_name)
       if ' ' in field_name:
@@ -192,9 +278,10 @@ class NodeList(list):
       tasks = {}
       for x in self:
           if field_name in x:
-             dextend(tasks,field_name + ":" + x[field_name]  ,x)
+            field = field_name + ":" + x[field_name] if add_field_name else x[field_name]
+            dextend(tasks, field, x)
           else:
-             dextend(tasks,"без значения",x)
+            dextend(tasks,"без значения",x)
       return tasks
 
     def Grouping_field(self):
@@ -218,16 +305,16 @@ class NodeList(list):
             #         if y not in x:
             #             y = ''
             # fields = [x for x in fields if x is not '' ]
-        fields = [x for x in fields if x is not '_segment']
-        fields = [x for x in fields if x is not 'id']
-        fields = [x for x in fields if x is not 'type']
-        fields = [x for x in fields if x is not 'имя']
+        fields = [x for x in fields if x != '_segment']
+        fields = [x for x in fields if x != 'id']
+        fields = [x for x in fields if x != 'type']
+        fields = [x for x in fields if x != 'имя']
         for i in range(len(fields)):
             if fields[i] == 'имя':
                 fields[i] = ''
             if fields[i] =='_segment':
                 fields[i] = ''
-        fields = [x for x in fields if x is not '']
+        fields = [x for x in fields if x != '']
         for x in fields:
             result = self.GroupBy(x)
             res = result.values()
@@ -343,6 +430,7 @@ class NodeList(list):
             _list.append(x)
         return _list
 
+
 KT = TypeVar('KT')
 VT = TypeVar('VT')
 
@@ -362,7 +450,7 @@ class Node(Mapping[KT,VT]):
         if make_or_fetch:
             result = parent_graph.Match(dic)
             if len(result) > 0:
-                self.dict = result[0].dict
+                self = result[0]
             else:
                 node = parent_graph.AddNode(self)
                 self.dict['id'] = node['id']
@@ -421,7 +509,7 @@ class Node(Mapping[KT,VT]):
         self.parent_graph.AddEdge(self, node)
         return node
 
-    def HasChild(self, node):
+    def HasChild(self, node)->bool:
         if node in self.Children(): return True
         else: return False
 
@@ -505,14 +593,15 @@ class Node(Mapping[KT,VT]):
         self.parent_graph.AddEdge(self, node)
         return self
 
-    def NotEmpty(self):
+    def NotEmpty(self) -> bool:
         return self["type"] != "empty"
-    
-    def IsEmpty(self):
+
+    def IsEmpty(self) -> bool:
         return self["type"] == "empty"
 
-    def Connect(self, target_node, label=None):
+    def Connect(self, target_node:'Node[str, Any]', label:Optional[str]=None):
         '''Adds directed connection between this node and target node'''
+
         self.parent_graph.AddEdge(self, target_node, label)
 
     def Connect_branch(self, target_node,branch):
@@ -534,24 +623,24 @@ class Node(Mapping[KT,VT]):
         '''Return first node connected to this node'''
         return self.parent_graph.ConnectsTo(self,label)[0]
 
-    def Children(self, cond={},label=""):
+    def Children(self, cond={},label="")->NodeList:
         '''Return all nodes that are connected to this node and
         satisfying condition <cond> that can be dictionary or bool function'''
         all_children = self.ConnectsTo(label)
         return all_children.Match(cond)
 
 
-    def Parents(self, cond={}, label=""):
+    def Parents(self, cond={}, label="")->NodeList:
         '''Return all nodes that are connected to this node'''
         all_parents= self.ConnectedWith(label)
         return all_parents.Match(cond)
 
 
-    def Child(self, condition, label=""):
+    def Child(self, condition, label="")->'Node[str, Any]':
         return self.Children(condition,label=label).First()
 
 
-    def Parent(self, condition, label=""):
+    def Parent(self, condition, label="")->'Node[str, Any]':
         return self.Parents(condition,label=label).First()
 
 
@@ -562,12 +651,12 @@ class Node(Mapping[KT,VT]):
 
 
     def Set(self,feature,amount):
-        '''Increment value of specified node property with a given amount'''
-        print()
-        if (self['type']=='раздел' and feature =='статус' and amount == 'с проблемой') or (self['type']=='раздел' and feature =='решение') or (self['type']=='раздел' and feature =='проблема'):
-            pass
-        else:
-            self[feature] = amount
+        '''Set value of specified node property with a given value'''
+        # print()
+        # if (self['type']=='раздел' and feature =='статус' and amount == 'с проблемой') or (self['type']=='раздел' and feature =='решение') or (self['type']=='раздел' and feature =='проблема'):
+        #    pass
+        #  else:
+        self[feature] = amount
 
         return self
 
@@ -675,6 +764,7 @@ class Graph():
             lst1.append(node1)
             self.edges_parent[node2] = lst1
 
+
         # Именование
         self.relations[node1,node2] = label
 
@@ -702,21 +792,82 @@ class Graph():
         else:
             return NodeList(self)
 
+    def Match2Node2(self, node1, node2):
+        """ Получает для каждого node1 список детей типа node2 """
+        nodes1 = self.Match(node1)
+        result = {}
+        for node in nodes1:
+            result[node] = node.Children(node2)
+        return result
 
     def Empty(self):
         return Node(self,{"type":"empty"})
+
+    def _make_line(self, node):
+        keys = node.keys
+        line = "{"
+        line = line + ','.join([x +': csvLine.' + x for x in keys]) + '}'
+        return line
+
+    def ExportNodeCSV(self, nodetype:str, filename:str=None)->str:
+         '''Export one type of node to CSV file'''    
+
+         filename = nodetype+'.csv' if filename is None else filename
+         type_nodes = self.Match({'type':nodetype})
+         keys = type_nodes[0].keys
+         f = open(filename, 'w')
+         writer = csv.DictWriter(f, fieldnames=keys)
+         writer.writeheader()
+         for row in type_nodes:
+                writer.writerow(row._dict) 
+         f.close()
+         query = ('LOAD CSV WITH HEADERS FROM "file:///%s" AS csvLine CREATE (p:%s' % (filename, nodetype)) + self._make_line(type_nodes[0]) + ')'
+         return query
+
+    def ExportAllNodesCSV(self, filename:str)->None:
+        '''Export nodes to CSV file'''
+        
+        all_types = self.Distinct('type')
+        print(all_types)
+        all_queries = []
+        for node_type in all_types:
+           all_queries.append(self.ExportNodeCSV(node_type))
+        
+        f = open(filename+ '_edges.csv', 'w')
+        writer = csv.writer(f)
+        writer.writerow(['id1', 'id2','type1','type2'])
+               
+        for node1 in self.edges:
+            for node2 in node1:
+                writer.writerow([node1['id'],node2['id'],node1['type'], node2['type']])
+        f.close()
+        query = 'LOAD CSV WITH HEADERS FROM "file:///%s" AS csvLine MATCH (node1:csvLine.type1 {id: toInteger(csvLine.id1)}),(node2:csvLine.type2 {id: toInteger(csvLine.id2)}) CREATE (node1)-->(node2)' % filename+ '_edges.csv'
+        all_queries.append(query)
+        fp.save_lines( filename, all_queries)
+
+               
+               
+
+
+
+
+
 
     def DeleteNode(self,node):
         self.nodes.remove(node)
         if node in self.edges:
            del self.edges[node]
+
         for key in self.edges:
             for el in self.edges[key]:
                 if el==node:
                     self.edges[key].remove(el)
+        dnodes =[]
         for pair in self.relations:
             if node in pair:
-                del self.relations[pair]
+                dnodes.append(pair)
+        for x in dnodes:
+            self.relations.pop(x)
 
     def DetachNode(self,node, label=""):
         for x in self.edges:
@@ -725,14 +876,17 @@ class Graph():
 
         if node in self.edges:
            del self.edges[node]
-
+        f = None
         for pair in self.relations:
             if label != "":
                 if node in pair and self.relations[pair] == label:
-                    del self.relations[pair]
+                    f  = pair
             else:
                 if node in pair:
-                    del self.relations[pair]
+                    f = pair
+        if f is not None:
+           self.relations.pop(f)
+
 
 
 
@@ -770,18 +924,36 @@ class Graph():
                 d[x[node_property]] = 1
         result = [x for x in d]
         return result
+    
 
-    def MatchOne(self, node):
+    def Values(self, node_property):
+        '''Returns list values of the specified field for each node in the list'''
+        result = [node[node_property] for node in self.nodes if node_property in node]
+        return result
+
+
+    def MatchOne(self, node: Union[Node[str, Any], Dict[str, Any]]) -> Node[str, Any]:
         return self.Match(node).First()
 
-    def Largest(self, feature):
+    def Largest(self, node, feature):
         '''Find node with the lagrest value of specified property'''
         maxval = -100000
-        curnode = {}
+        curnode = self.Empty()
         for x in self.nodes:
             if feature in x:
                 if float(x[feature]) > maxval:
                     maxval = float(x[feature])
+                    curnode = x
+        return curnode
+
+    def Smallest(self, feature):
+        '''Find node with the smallest value of specified property'''
+        minval = 100000
+        curnode = {}
+        for x in self.nodes:
+            if feature in x:
+                if float(x[feature]) < minval:
+                    minval = float(x[feature])
                     curnode = x
         return curnode
 
@@ -794,8 +966,8 @@ class Graph():
                     match_list.append(x)
 
         if type(node) is types.FunctionType:
-            match_list = NodeList(self.parent_graph)
-            for x in self:
+            match_list = NodeList(self)
+            for x in self.nodes:
                 match = node(x)
                 if match:
                     match_list.append(x)

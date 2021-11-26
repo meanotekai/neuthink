@@ -14,6 +14,9 @@ import copy
 import time
 import traceback
 
+random.seed(15343434)
+
+
 try:
     from apex import amp
     from apex.optimizers import FusedAdam
@@ -26,15 +29,15 @@ try:
   from sru import SRU
   sru_enabled=True
 except:
-  print("SRU not installed, SRU layers support disabled")
+  #print("SRU not installed, SRU layers support disabled")
   sru_enabled=False
 
 
 from neuthink.graph.basics import Node,NodeList,Graph
 from neuthink.nImage import  mvImage
-import neuthink.metaimage as mimage
-import neuthink.metacluster as mcluster
-import neuthink.metatext
+from neuthink import metaimage as mimage
+from neuthink import metacluster as mcluster
+from neuthink import metatext
 from neuthink.display import display_comp_status
 
 
@@ -51,6 +54,11 @@ def full_size(q:torch.tensor):
     s = q.size()
     return reduce(lambda x,y:x*y , s)
 
+def dextend(dic,field,unit):
+  if field in dic:
+      dic[field].append(unit)
+  else:
+      dic[field]=[unit]
 
 class TrackedNodeList(list):
     def __init__(self, parent_graph, *args):
@@ -70,13 +78,22 @@ class TrackedNodeList(list):
         return is_match
 
     def __getitem__(self, given):
+        if type(given) is str:
+            return [x[given] for x in self]
         if isinstance(given, slice):
             # do your handling for a slice object:
             return type(self)(self.parent_graph, list.__getitem__(self, given))
         else:
             # Do your handling for a plain index
             return list.__getitem__(self, given)
-
+            
+    def __setitem__(self, key, newvalue):
+        if type(key) is str:
+            for x in self:
+                x[key] = newvalue
+        else:
+            return list.__setitem__(self, key, newvalue)
+            
     def First(self):
         if len(self)>0:
             return self[0]
@@ -166,7 +183,7 @@ class TrackedNodeList(list):
     def HasChild(self, node):
         result = []
         for x in self:
-            people = x.children(node)
+            people = x.Children(node)
             if people:
                 result.append(x)
         return result
@@ -261,7 +278,7 @@ class dNodeList(TrackedNodeList,torch.nn.Module):
         torch.nn.Module.__init__(self)
         self.parent_graph = parent_graph
         self.Image = mimage.MetaImage(self)
-        self.Text = neuthink.metatext.MetaText(self)
+        self.Text = metatext.MetaText(self)
         self.Cluster = mcluster.MetaCluster(self)
         self.mode = "design"
         self.loadfunc=None
@@ -275,6 +292,7 @@ class dNodeList(TrackedNodeList,torch.nn.Module):
         self.naming = {}
         self.save_func = None
         self.class_source = None
+        self.completed= True
         self.layers = {}
         self.loss = 0
         self.classes=[]
@@ -282,10 +300,11 @@ class dNodeList(TrackedNodeList,torch.nn.Module):
         self.test_set= None
         self.features={}
         self.func = None
+        self.vfunc = None
         self.resources={}
         self.Parent = None
         self.Child = None
-        self.device=None
+        self.device='cpu'
         self.target=None
         self.class_target=None
         self.subindex =0
@@ -300,6 +319,7 @@ class dNodeList(TrackedNodeList,torch.nn.Module):
         if self.mode=='design':
             self.record("tParent",[],[])
             #self.batch_size = 1 # temporary hack
+        self.res = self.PointerNode
         return self
 
     def tChild(self,source={}):
@@ -310,10 +330,27 @@ class dNodeList(TrackedNodeList,torch.nn.Module):
         
         if self.mode=='design':
             self.record("tChild",['source'],[source])
-  
+        self.res = self.PointerNode
         return self
 
-
+    def GroupBy(self,field_name,add_field_name:bool=True):
+      #группирует NodeList по указанному полю
+      field_name = (field_name)
+      if ' ' in field_name:
+          field_name = field_name.replace(' ', '_')
+      tasks = {}
+      for x in self:
+          if field_name in x:
+            field_name_name = field_name + ":" + x[field_name] if add_field_name else x[field_name]
+            dextend(tasks, field_name_name, x)
+          else:
+            dextend(tasks,"без значения",x)
+      return tasks
+      
+    def Interval(self, feature, value_min, value_max):
+        data = [x for x in self if (feature in x) and (float(x[feature]) > value_min and float(x[feature]) < value_max)]
+        results = NodeList(self.parent_graph, data)
+        return results
     
     def  __hash__(self):
         '''for pytorch 1.0 compatibility. not very good idea, but not likely to cause any trouble'''
@@ -624,6 +661,7 @@ class dNodeList(TrackedNodeList,torch.nn.Module):
         return self
 
 
+
     def Conv1D(self, kernel_size:int=5,nmaps:int=1,padding:int=0,stride:int=1, input_size=None, target=None, source=None,in_channels=None,name=None):
         ''' 1D convolution layer '''
         if source is None:
@@ -672,6 +710,7 @@ class dNodeList(TrackedNodeList,torch.nn.Module):
         return self
 
 
+
     def Dropout(self,p=0.5,source=None,target=None, name=None):
         ''' dropout layer '''
         if source is None: source = self.last_call
@@ -684,7 +723,7 @@ class dNodeList(TrackedNodeList,torch.nn.Module):
         if m is None:
             m = self.get_stored_layer(name,target) 
 
-        if len(self)>0:     
+        if source in self.metatensor:     
            if self.mode=='train':
             self.res = m(self.metatensor[source]) 
            else:
@@ -974,6 +1013,56 @@ class dNodeList(TrackedNodeList,torch.nn.Module):
                 p = p * x[self.metatensor['chunk_tensor'][0][i+1]]
         return p
 
+
+    def BatchProbability(self, sents ,start_from:int =-1, init_state={}, keep_state=False)->float:
+        '''calculates LM probability for a given sent, starting from position start_from, and initial state init_state'''
+
+        def clear_state_vector(self):
+            keys = list(self.metatensor.keys())
+            #this removes state vector
+            for x in keys:
+                if "_state" in x:
+                    self.metatensor.pop(x)
+
+        self.clear()
+        self.index=0
+        if 'wordpieces' in self.resources:
+#            print(self.resources['filename'])
+            modelname = self.resources['filename'][:self.resources['filename'].rfind('.')]
+#            print(modelname)
+            modelname = modelname + '.model'
+            sent = neuthink.metatext.BPETokenize(sent, modelname)
+            sent = sent[0].split(' ')
+#            print(sent)
+        for x in sents:
+            self.append(Node(self.parent_graph,{'chunk':x}))
+
+        self.index=0
+        self.size=len(sents)
+        self.metatensor=copy.copy(init_state)
+        if keep_state:
+            self.mode="predict"
+        self.Run()
+        self.mode = 'predict'
+        if not keep_state:
+            clear_state_vector(self)
+      
+        value_tensor = torch.reshape(self.metatensor['Classify1'].detach().cpu(),(len(sents),len(sents[0]),153)).numpy()
+        index_tensor = self.res_vector
+        print(value_tensor.shape)
+        vals = []
+        for j in range(len(sents)):
+         p = 1.0
+         for i,x in enumerate(value_tensor[j]):
+             if i+1 < len(value_tensor[j]) and i>start_from:
+                 p = p * x[self.metatensor['chunk_tensor'][j][i+1]]
+         vals.append(p)
+
+
+        return vals
+
+
+
     def ResetLSTMState(self):
         keys = list(self.metatensor.keys())
         for x in keys:
@@ -1004,6 +1093,30 @@ class dNodeList(TrackedNodeList,torch.nn.Module):
 
 
 
+    def Unfold_future(self, source=None, cluster_id=0, target=None,start=[0], func='chunk_tensor'):
+         keys = list(self.metatensor.keys())
+#        print(start)
+  #       print("UNFOLD", start)
+         for x in keys:
+             if "_state" in x:
+                 del self.metatensor[x]
+                 #self.metatensor.pop(x)
+         result=[]
+         self.metatensor[func] = torch.tensor(np.array(start), requires_grad=False)
+         if self.device is not None:
+            self.metatensor[func] = self.metatensor[func].to(self.device)
+         self.mode='generate'
+#             print(self.metatensor[func])
+        #  print(self.metatensor[func])
+#             print("execute model")
+         self.Run()
+         keys = list(self.metatensor.keys())
+
+         for x in keys:
+             if "_state" in x:
+                 self.metatensor.pop(x)
+         return self.res_vector
+
 
     def Unfold_aux(self, source=None, cluster_id=0, target=None,start=[0], func='chunk_tensor', seq_length=20, transformer_len = None,sampling="maxprob"):
          '''source - tensor with network state'''
@@ -1024,7 +1137,8 @@ class dNodeList(TrackedNodeList,torch.nn.Module):
              return random.choice(index_list)
 
          def nucleus_sampling():
-             max_p = 0.1
+             max_p = 0.35
+
              indexes = self.metatensor['class_sorted'][-1]
              probs = self.metatensor['class_probs'][-1]
 #             print(indexes)
@@ -1288,6 +1402,65 @@ class dNodeList(TrackedNodeList,torch.nn.Module):
         self.last_call = target
         return self
 
+
+    def BLSTMAD(self, size:int=25, source = None, target = None, input_size=None):
+        '''blstm layer'''
+
+
+        if source is None:
+            source = self.last_call
+
+        if source in self.metatensor:
+         shape = self.metatensor[source].size()
+         if len(shape)==2:
+                       #LSTM shape needs 3 dimensions, adding batch dim by defaule
+                     #  print("conversion")
+                       self.metatensor[source] = self.metatensor[source].unsqueeze(0)
+                       #print(shape(self.metatensor[source])
+        else:
+            print("Warning: no data in model found in BLSTM Layer")
+
+
+        if self.mode=="design":
+           #print(dim_size(self.metatensor[source]))
+           #print(self.metatensor[source].size())
+           if input_size is None:
+               if not source in self.metatensor:
+                   print("Error: No data in the model and no input_size specified")
+                   return
+               input_size = dim_size(self.metatensor[source])
+           
+           m = nn.LSTM(input_size, size, bidirectional = True, batch_first=True)
+           m1 = nn.LSTM(input_size, size, bidirectional = True, batch_first=True)
+           rp = nn.ReLU()
+           if target is None:
+               target = self.get_name("BLSTR",m)
+               target = self.get_name("BLSTRx",m1)
+           else:
+               self.register_name(target, m)
+               self.register_name(target+"X", m1)
+               
+           print(target)
+           self.record("BLSTMAD",['size','source','target','input_size'],[size,source,target,input_size])
+        else:
+             #print(shape)
+          
+            m = self.layers[target]
+            m1 = self.layers[target+"X"]
+            
+        if source in self.metatensor:
+          f = torch.nn.ReLU()
+          rp1 = f(self.metatensor[source])
+          rp2 = f(self.metatensor[source]*-1.0)
+
+          a, hidden1 = m(rp1) 
+          a2, hidden2 = m1(rp2) 
+          self.metatensor[target] = a2+a
+
+          self.res = self.metatensor[target]
+        self.last_call = target
+        return self
+
     def SRU(self, size:int=25, source = None, target = None, name=None, state_vector="default", input_size=None,carry_state="no",depth=1):
             '''lstm layer'''
             def repackage_hidden(h):
@@ -1499,6 +1672,87 @@ class dNodeList(TrackedNodeList,torch.nn.Module):
         self.layers['LSTMBank'+str(i)].to('cpu')
 
 
+    def RNN(self, size:int=25, source = None, target = None, name=None, state_vector="default", input_size=None,carry_state="no", data_parallel=False):
+            '''Elman RNN layer'''
+
+            def repackage_hidden(h):
+              """ hidden states in new Tensors, to detach them from their history."""
+              if isinstance(h, torch.Tensor):
+                return h.detach()
+              else:
+                return tuple(repackage_hidden(v) for v in h)
+
+            if source is None:
+                source = self.last_call
+
+            if source in self.metatensor:
+             shape = self.metatensor[source].size()
+#             print(shape,source)
+             m = None
+             if len(shape)==2:
+                           self.metatensor[source] = self.metatensor[source].unsqueeze(0)
+   
+            else:
+                print("Warning: no data in model found in RNN Layer")
+
+
+            if self.mode=="design":
+               if input_size is None:
+                   if not source in self.metatensor:
+                       print("Error: No data in the model and no input_size specified")
+                       return
+                   input_size = dim_size(self.metatensor[source])
+               if not (name in self.layers):
+                name = target
+                m = nn.RNN(input_size, size, bidirectional = False, batch_first=True)
+
+               else:
+                m = self.layers[name]
+
+               if target is None:
+                   target = self.get_name("RNN",m)
+               else:
+                   if target not in self.layers:
+                    self.register_name(target, m)
+               if name is None:
+                  name=target
+               print(target)
+               self.record("RNN",['size','source','target','input_size','name','state_vector','carry_state','data_parallel'],[size,source,target,input_size,name,state_vector,carry_state,data_parallel])
+            else:
+                 #print(shape)
+
+               m = self.layers[name]
+               #q.flatten_parameters()
+               if data_parallel and self.mode=='train' :
+                    m = nn.DataParallel(m)
+            if m is None:
+               m = self.layers[name]
+
+            if source in self.metatensor:
+              if not target+'_state' in self.metatensor:
+                if state_vector=="default":
+                  #if self.mode!='design':
+                   #m.module.flatten_parameters()
+                  self.metatensor[target], hidden = m(self.metatensor[source])
+                else:
+                  self.metatensor[target], hidden = m(self.metatensor[source], self.metatensor[state_vector])
+
+              else:
+                if state_vector=="default":
+                  self.metatensor[target], hidden = m(self.metatensor[source],self.metatensor[target+'_state'])
+                else:
+                  self.metatensor[target], hidden = m(self.metatensor[source],self.metatensor[state_vector])
+
+              if carry_state=='yes':
+                   self.metatensor[target+'qstate'] = hidden
+              if self.mode=='generate' or self.mode=='predict':
+                  self.metatensor[target+'_state'] = repackage_hidden(hidden)
+        #         print("hidden stored")
+#              self.res = self.metatensor[target]
+            self.last_call = target
+            return self
+
+
     def LSTM(self, size:int=25, source = None, target = None, name=None, state_vector="default", input_size=None,carry_state="no", data_parallel=False):
             '''lstm layer'''
 
@@ -1555,7 +1809,7 @@ class dNodeList(TrackedNodeList,torch.nn.Module):
                if name is None:
                   name=target
                print(target)
-               self.record("LSTM",['size','source','target','input_size','name','state_vector','carry_state','data_parallel'],[str(size),source,target,input_size,name,state_vector,carry_state,data_parallel])
+               self.record("LSTM",['size','source','target','input_size','name','state_vector','carry_state','data_parallel', 'name'],[str(size),source,target,input_size,name,state_vector,carry_state,data_parallel])
             else:
                  #print(shape)
 
@@ -1613,6 +1867,7 @@ class dNodeList(TrackedNodeList,torch.nn.Module):
             self.loss = criterion(self.res, self.metatensor[regression_target])
         if source in self.metatensor:
             self.metatensor[target]=self.res
+            self.result = self.res
         return self
 
 
@@ -1638,7 +1893,7 @@ class dNodeList(TrackedNodeList,torch.nn.Module):
                     self.metatensor[source] = self.metatensor[source].contiguous().view(unisize(self.metatensor[source]), -1)
                 #    print("size conversion", self.metatensor[source].size())
              else:
-              if (type(prev_layer) is torch.nn.LSTM):
+              if (type(prev_layer) is torch.nn.LSTM)  or  (type(prev_layer) is torch.nn.RNN) or (class_target=="_seq_model"):
                     self.metatensor[source] = self.metatensor[source].contiguous().view(unisize(self.metatensor[source]), -1)
         #if self.mode=='train':
         # criterion = nn.NLLLoss()
@@ -1754,7 +2009,7 @@ class dNodeList(TrackedNodeList,torch.nn.Module):
             try:
              for j,x in enumerate(self.res):
                 if cmode!='span':
-                 self[i][target] = x
+                  self[i][target] = x
                 
                 else:
                  self[i][target] = 'other'
@@ -1827,8 +2082,9 @@ class dNodeList(TrackedNodeList,torch.nn.Module):
             #print(len(self.res))
             #print(len(self))
             #print(i)
-            try:
-             for j,x in enumerate(self.res):
+            if len(self.res)<=len(self):
+             try:
+              for j,x in enumerate(self.res):
                 self[i][target+'vector'] = nx[j]
                 if cmode!='span':
                  self[i][target] = x
@@ -1840,7 +2096,7 @@ class dNodeList(TrackedNodeList,torch.nn.Module):
                 # 
 #                print(x,target,i)
                 i = i + 1
-            except:
+             except:
                 print(traceback.format_exc())
                 pass
 #                
@@ -1913,6 +2169,8 @@ class dNodeList(TrackedNodeList,torch.nn.Module):
     def F1(self,target,prediction,term):
         prec = self.Precision(target,prediction,term)
         rec = self.Recall(target,prediction,term)
+        if prec == 0 or rec == 0:
+            return 0
         return (2 * prec * rec)/(prec+rec)
 
     #not differentiable aux operations
@@ -1925,7 +2183,8 @@ class dNodeList(TrackedNodeList,torch.nn.Module):
            # print(0/0)
             for i  in range(len(self)):
                 if source in self[i]:
-                 self[i][target] = self[i][source]
+                 if (not target in self[i]) or (self[i][target].lower()=='other'):
+                    self[i][target] = self[i][source]
                  self[i].dict.pop(source)
                 #print(self[i][target],target)
 
@@ -1953,6 +2212,16 @@ class dNodeList(TrackedNodeList,torch.nn.Module):
         if self.Child[-1].mode=='design':
          self.Child[-1].record("Parent[0].Exec",['cache'],[cache])
         return self
+    
+    def Execute(self, show_progress=False):
+        self.mode='predict'
+        i = 0
+        while not self.completed:
+            self.Run()
+            i = i + 1
+            if show_progress:
+                print(i,'   ', end='\r')
+        return self.res
 
     def AddParentModel(self, model):
         if self.Parent is None:
@@ -2047,6 +2316,7 @@ class dNodeList(TrackedNodeList,torch.nn.Module):
         graph = self.parent_graph
         lst = dNodeList(graph) if target_list is None else target_list
         lst.save_func = self.save_func
+        lst.loadfunc = self.loadfunc
         for x in self:
             words = x.Children({})
             for word in words:
@@ -2070,28 +2340,88 @@ class dNodeList(TrackedNodeList,torch.nn.Module):
     def LoadContent(self, source):
         '''loads content from different nodelist into this nodelist'''
         self.parent_graph = source.parent_graph
+        self.clear()
         for x in source:
 
             self.append(x)
 
 
     #vectorization primitives
-    def Features(self, funcname=None, source=None, target=None):
+    def VectorFeatures(self, funcname=None, source:str=None, target:str=None,buffering="yes"):
+        if source is None:
+            source = self.last_call
+        if self.mode=='design':
+            self.record('VectorFeatures',['source','target','buffering'],[source, target,buffering])
+
+            #self.features={}
+            if funcname is not None:
+               self.vfunc = funcname
+        #Check sequence mode vs normal mode
+        if self.mode=="design" and len(self)==0:
+         return self
+        node = self[0]
+        
+        if node.Parent({}).NotEmpty():
+                #obtain proper sequence and change batch size
+                curword:Node = self[self.index] if self.PointerNode is None else self.PointerNode
+                sent:Node = curword.Parent({})
+                words = [x for x in sent.Children({"type":source})]
+              #  print("xwords",words)
+                max_words = len(self) - (self.index)
+                if len(words)>max_words:
+                    words = words[:max_words]
+                if self.PointerNode is None:
+                    #print('Lookup len words: ',len(words))
+                    self.batch_size = len(words)
+              #  print(len(words))
+            #    print(self.batch_size)
+                nodes = words
+                #print("here")
+        else:
+            #Normal mode
+            nodes = self[self.index:self.index+self.batch_size]
+        
+        #print("node", nodes)
+        for i in range(0, len(nodes)):
+                if not (target in nodes[i]):
+                   fr = self.vfunc(nodes, i,source, mode=self.mode)
+                   if type(fr) is list:
+                      for j in range(0,len(nodes)):
+                          nodes[j][target] = fr[j].to(self.device)
+                      break
+                   else:
+                    nodes[i][target] = fr
+                    nodes[i][target] = nodes[i][target].to(self.device)
+        
+        res = [x[target] for x in nodes]
+        #print(res)
+        if buffering!='yes':
+          for i in range(len(nodes)):
+              del nodes[i].dict[target]
+        self.metatensor[target] = torch.stack(res,dim=0)
+        if self.device is not None:
+             self.metatensor[target] = self.metatensor[target].to(self.device)
+        self.last_call = target
+        return self
+
+
+
+
+    def Features(self, funcname=None, source:str=None, target:str=None):
         '''generates features using func'''
         if source is None:
             source = self.last_call
-        #func = eval(funcname)
         if self.mode=='design':
             self.record('Features',['source','target'],[source,target])
         if len(self)>0:
          if self.mode=='design':
              #build feature list
              d = {}
-             if len(self)<300000:
+             if len(self)<200000:
               all_features_list = list(set(reduce(lambda x,y:x+y,[funcname(self,index,source) for index in range(len(self))])))
              else:
-              all_features_list = list(set(reduce(lambda x,y:x+y,[funcname(self,index,source) for index in range(30000)])))
               print("reduced feature estimation")
+              all_features_list = list(set(reduce(lambda x,y:x+y,[funcname(self,index,source) for index in range(50000)])))
 
              #for speed of access will make a dictionary
              for i,x in enumerate(all_features_list):
@@ -2106,10 +2436,11 @@ class dNodeList(TrackedNodeList,torch.nn.Module):
 
          #vectorize batch
          nodes = self[self.index:self.index+self.batch_size]
+         nodes.mode = self.mode
          #if self.mode=='predict':
         #        nodes = self
          for i in range(len(nodes)):
-             cur_features = self.func(nodes, i,source)
+             cur_features = self.func(nodes, i,source, self.mode)
              vector = np.zeros(len(self.features[target]))
              allf=self.features[target]
              for x in cur_features:
@@ -2268,9 +2599,9 @@ class dNodeList(TrackedNodeList,torch.nn.Module):
 
             if len(self)>0:
              for x in nodes:
-                x[target] = torch.from_numpy(x[source]).float()
+                x[target+'x'] = torch.from_numpy(x[source]).float()
 
-            res = [x[target] for x in nodes]
+            res = [x[target+'x'] for x in nodes]
             self.metatensor[target] = torch.stack(res,dim=0)
             if self.device is not None:
                self.metatensor[target] = self.metatensor[target].to(self.device)
@@ -2356,7 +2687,7 @@ class dNodeList(TrackedNodeList,torch.nn.Module):
               return self
            if dtype is np.ndarray:
                 print("Vec_nump")
-                self.Vectorizenumpy(source=source)
+                self.Vectorizenumpy(source=source, target=source)
 
                 if not target in self[0]:
                    self.Linear(size=size,target=target).Sigmoid()
@@ -2387,9 +2718,17 @@ class dNodeList(TrackedNodeList,torch.nn.Module):
         else:
             if self.loadfunc is None:
                 self.index = 0
+                
             else:
                 self.parent_graph = Graph()
-                self.loadfunc()
+                print("exec load func")
+                print("**************************")
+                data = self.loadfunc()
+                data = data.Unroll()
+                self.clear()
+                for x in data:
+                    self.append(x)
+                self.parent_graph = data.parent_graph
                 self.index = 0
 
     def Clone(self, split=1.0, empty=False):
@@ -2407,7 +2746,9 @@ class dNodeList(TrackedNodeList,torch.nn.Module):
         model2.resources = self.resources
         model2.target = self.target
         model2.features = self.features
+        model2.loadfunc = self.loadfunc
         model2.func = self.func
+        model2.vfunc = self.vfunc
         model2.save_func = self.save_func
         model2.class_target = self.class_target
         #model2.start_point = self.start_point
@@ -2421,7 +2762,7 @@ class dNodeList(TrackedNodeList,torch.nn.Module):
         model2.batch_size = self.batch_size
         #copy data content with split
         if split==1.0:
-            print("no split")
+            #print("no split")
             return model2
  
         if not empty:
@@ -2450,7 +2791,15 @@ class dNodeList(TrackedNodeList,torch.nn.Module):
 
         return model2
 
-    def Predict2(self, prediction_target=None, target=None, basemode='train'):
+    def ComputeAll(self, basemode='train'):
+        self.index = 0
+        while self.index<len(self):
+              #print(self.index)
+              self.mode = basemode
+              self.Run()
+              self.index = self.index + self.batch_size
+
+    def Predict2(self, prediction_target=None, target=None, basemode='train', rewrite=False):
             '''this is aux predict when train function. need fixing'''
             if prediction_target is None:
                prediction_target = self.target
@@ -2474,13 +2823,17 @@ class dNodeList(TrackedNodeList,torch.nn.Module):
             while self.index<len(self):
         #        print(self.index)
                 self.mode = basemode
+              #  print("predict mode:", self.mode)
 #                self.metatensor={}
+                #print("pred2")
                 self.Run()
+                #print("RES:", self.res)
                 if basemode=='train' or basemode=='eval':
                    self.total_loss = self.total_loss + self.loss.detach().item()
                    try:
                     for x in self.result:
-                     self[i][prediction_target] = x
+                     if (not prediction_target in self[i]) or (self[i][prediction_target].lower()=='other') or rewrite:
+                        self[i][prediction_target] = x
                      i = i + 1
                    except:
                        target =None
@@ -2520,6 +2873,7 @@ class dNodeList(TrackedNodeList,torch.nn.Module):
 
             new_list.mode='predict'
             self.mode='predict'
+          #  print("pred1")
             new_list.Predict2(basemode='predict')
             finished=True
             if getattr(data, "loadfunc", None) is not None:
@@ -2533,8 +2887,10 @@ class dNodeList(TrackedNodeList,torch.nn.Module):
         return data
 
 
-    def compile(self,  opt="Adam", size=50, lr=0.01,avg_steps = None,thresold = 0.002, post_func = None, weight_decay=3e-4, control_mode='test', mixed_precision=False,data_parallel=False,test_data=None,split_proportion=0.8,model_save_step=[],filename='', clip_grad=1):
-        _compile(self, opt, size, lr, avg_steps=avg_steps, thresold=thresold, post_func=post_func, weight_decay=weight_decay,control_mode=control_mode,clip_grad=clip_grad, mixed_precision=mixed_precision,data_parallel=data_parallel,test_data=test_data,split_proportion=split_proportion,model_save_step=model_save_step,filename=filename)
+    def compile(self,  opt="Adam", size=50, lr=0.01,avg_steps = None,thresold = 0.002, post_func = None, weight_decay=3e-4, control_mode='test', mixed_precision=False,data_parallel=False,test_data=None,split_proportion=0.8,model_save_step=[],filename='', clip_grad=1,max_step=1000000000, test_batch_size=50, word_index=0, decay=0.8,noreprint=False):
+        print("HEYHEY")
+        print(opt)
+        _compile(self, opt=opt, size=size, lr=lr, avg_steps=avg_steps, thresold=thresold, post_func=post_func, weight_decay=weight_decay,control_mode=control_mode,clip_grad=clip_grad, mixed_precision=mixed_precision,data_parallel=data_parallel,test_data=test_data,split_proportion=split_proportion,model_save_step=model_save_step,filename=filename,max_step=max_step, test_batch_size=test_batch_size, word_index=word_index,decay=decay, noreprint=noreprint)
         return self.predict
 
     def Export(self, filename):
@@ -2565,8 +2921,13 @@ class dNodeList(TrackedNodeList,torch.nn.Module):
                 #import feautures
                 cbase.append("import json")
                 cbase.append("model.features = json.loads(open(path+'/'+'" + filename + ".fea','r').read())")
-                cbase.append("from ." + self.func.__module__ + " import " + self.func.__name__)
-                cbase.append("model.func = " + self.func.__name__)
+                cbase.append("from ." + self.func.__module__ + " import *")
+                if self.func is not None:
+                  cbase.append("model.func = " + self.func.__name__)
+            if self.vfunc is not None:
+                  cbase.append("from ." + self.vfunc.__module__ + " import *")
+                  cbase.append("model.vfunc = " + self.vfunc.__name__)
+
             if len(self.resources)>0:
                 cbase.append("import json")
                 cbase.append("model.resources = json.loads(open(path+'/'+'" + filename + ".res','r').read())")
@@ -2600,6 +2961,25 @@ class dNodeList(TrackedNodeList,torch.nn.Module):
                 f.close()
 
 
+def test_decode_future(model):
+    t1 = model[3]["chunk"]
+    #t1 = "Сборн"
+    print(t1[:int(len(t1)/2)])
+    data = model.Unfold_future(start = model.Text.StringEncode(t1[:int(len(t1)/2)][::-1]))
+    model.mode = 'generate'
+    data = model.Text.StringDecode(data)
+
+    t1 = model[4]["chunk"]
+    #t1 = "Сборн"
+    print(t1[:int(len(t1)/2)])
+    data1 = model.Unfold_future(start = model.Text.StringEncode(t1[:int(len(t1)/2)][::-1]))
+    model.mode = 'generate'
+    data1 = model.Text.StringDecode(data1)
+
+
+    model.mode='train'
+    return "\n>> " + data + "\n>> " + data1
+
 def test_decode_translate(model):
     t1 = "Острый гастрит"[::-1]
     data = model.Unfold_aux(start=model.Text.StringEncode('\n'+t1+'^^'), seq_length=100)
@@ -2618,6 +2998,25 @@ def test_decode_translate(model):
 
     model.mode = 'train'
     return data +'ST\n'+data1+'\nST'+data2 +'\nST'+data3
+
+
+def test_decode_meta(model):
+    t1 = 'f("Hello","")\n > 5\nf("outThere","")\n > 8\nf("outThere","")\n >'
+    data = model.Unfold_aux(start=model.Text.StringEncode(t1), seq_length=100)
+    data = model.Text.StringDecode(data)
+
+    t2 = 'f("hello","there")\n > "hellothere"\nf("who","me")\n > "whome"\nf("john","Smith")\n >'
+    data1 = model.Unfold_aux(start=model.Text.StringEncode(t2), seq_length=100)
+    data1 = model.Text.StringDecode(data1)
+    t3 = 'f("hello",3)\n > True\nf("who",2)\n > False\nf("john",2)\n >'
+    data2 = model.Unfold_aux(start=model.Text.StringEncode(t3), seq_length=100)
+    data2 = model.Text.StringDecode(data2)
+
+
+
+    model.mode = 'train'
+    return data +'ST\n'+data1+'\nST'+data2 +'\n\n'
+
 
 def test_decode_para(model):
     t1 = "патент государственным органом власти по собственности; например, российской федерации органом  роспатент"
@@ -2688,7 +3087,7 @@ def set_bank(model,optimizer,lr):
 
 
 
-def _compile(model:dNodeList, opt="Adam", size=50, lr=0.01,avg_steps = None,thresold = 0.002, post_func=None, weight_decay=3e-4, control_mode="test",mixed_precision=False,data_parallel=False, test_data=None, split_proportion=0.8,model_save_step=[],filename='',clip_grad=1):
+def _compile(model:dNodeList, opt="Adam", size=50, lr=0.01,avg_steps = None,thresold = 0.002, post_func=None, weight_decay=3e-4, control_mode="test",mixed_precision=False,data_parallel=False, test_data=None, split_proportion=0.8,model_save_step=[],filename='',clip_grad=1, max_step=1000000000, test_batch_size=50, word_index=0, decay=0.85,noreprint=False):
 
 
     error = 900000000000000
@@ -2699,6 +3098,8 @@ def _compile(model:dNodeList, opt="Adam", size=50, lr=0.01,avg_steps = None,thre
     accuracy = None
     best_accuracy = None
     moving_avg = 0
+    if test_batch_size ==50:
+       test_batch_size = size
     best_loss = 900000000
     merror = 100000
 #    avg_steps = 550
@@ -2712,30 +3113,35 @@ def _compile(model:dNodeList, opt="Adam", size=50, lr=0.01,avg_steps = None,thre
     model.batch_size = size
     #orch.cuda.set_device(1)
 #    opt='SGD'
+#    print("***************************")
+#    print(opt)
+    opt="Adam"
     if opt=="SGD":
+    
         optimizer = torch.optim.SGD(model.parameters(), lr = lr ,momentum=0.8, nesterov=True)
         #optimizer = torch.optim.Adam(model.parameters(), lr = lr, weight_decay = 3e-4)
     if opt=="Adam":
         #model.parameters().flatten_parameters()
         optimizer=  torch.optim.Adam(model.parameters(), lr = lr, weight_decay = weight_decay)
-#        optimizer=  torch.optim.Adam(list(model.layers['LSTM7'].parameters()) + list(model.layers['Classify1'].parameters()) + list(model.layers['LSTM8'].parameters()), lr = lr, weight_decay = weight_decay)
-#        optimizer=  torch.optim.Adam(list(model.layers['LSTM7'].parameters()), lr = lr, weight_decay = weight_decay)
+        #optimizer=  torch.optim.Adam(list(model.layers['tstate'].parameters()),lr = lr, weight_decay = weight_decay)
+#        optimizer=  torch.optim.Adam(list(model.layers['tstate'].parameters()) + list(model.layers['Classify1'].parameters()) + list(model.layers['LSTM8'].parameters()), lr = lr, weight_decay = weight_decay)
+        #optimizer=  torch.optim.Adam(list(model.layers['LSTM7'].parameters()), lr = lr, weight_decay = weight_decay)
 
     #    optimizer2= torch.optim.Adam(parameters_advanced, lr = lr)# weight_decay = weight_decay)
 
         #optimizer = torch.optim.Adam(model.parameters(), lr = lr)
-    model.index = 0#185000#14 * 3500
+    model.index = word_index#185000#14 * 3500
     q = len(model)
     model.PointerNode=None
     print("len of the model",q)
     print("split")
     if test_data is None:
-        if len(model)<500000:
+        if len(model)<300000:
             test_model = model.Clone(split=split_proportion)
         else:
-            if len(model)>1000000:
-                print(1-(30000/len(model)))
-                test_model = model.Clone(split=1-(15000/len(model)))
+            if len(model)>400000:
+                print(1-(10000/len(model)))
+                test_model = model.Clone(split=1-(10000/len(model)))
                 print(len(test_model))
                 print("Clone finished")
             else:
@@ -2746,36 +3152,36 @@ def _compile(model:dNodeList, opt="Adam", size=50, lr=0.01,avg_steps = None,thre
             test_model.append(x)
         test_data.clear()
     model.test_set  = test_model
-    random.seed(33632211916)
+    random.seed(834587654)
 
     if avg_steps is None:
         avg_steps = len(model)/size
 
     import gc
     gc.collect()
-    #model.Shuffle()
     stats = open('stats.csv','a')
     stats.write('iteration \t train_error \t test_error \n')
     stats.close()
     if mixed_precision:
-#        model, optimizer = amp.initialize(model, optimizer, opt_level="O2", keep_batchnorm_fp32=False,  loss_scale="dynamic")
+#         model, optimizer = amp.initialize(model, optimizer, opt_level="O2", keep_batchnorm_fp32=False,  loss_scale="dynamic")
          model, optimizer = amp.initialize(model, optimizer, opt_level="O1",   loss_scale="dynamic")
 
     if data_parallel:
-       test_model.batch_size = 21#int(size/torch.cuda.device_count())
+       test_model.batch_size = 10#int(size/torch.cuda.device_count())
 #    if data_parallel:
 #        torch.distributed.init_process_group(backend='nccl',init_method='env://')
 #        model = DDP(model, delay_allreduce=True)
 
     step  = 0
     cind = 0
-    while lr > thresold:
+    while lr > thresold and step<max_step:
 #        optimizer = set_bank(model,optimizer,lr)
         optimizer.zero_grad()
         model.Run()
         batch_error = model.loss
-
+    #    print(batch_error)
         torch.nn.utils.clip_grad_norm(model.parameters(),clip_grad)
+
         #batch_error = batch_error.mean()
 #        v = batch_error.detach().item()
 
@@ -2785,7 +3191,9 @@ def _compile(model:dNodeList, opt="Adam", size=50, lr=0.01,avg_steps = None,thre
 
         else:
             batch_error.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 2.5)
+        torch.nn.utils.clip_grad_norm(model.parameters(),clip_grad)
+    
+        #torch.nn.utils.clip_grad_norm_(model.parameters(), 2.5)
 
         v = batch_error.detach().item()
         import math
@@ -2804,8 +3212,10 @@ def _compile(model:dNodeList, opt="Adam", size=50, lr=0.01,avg_steps = None,thre
 #        model.metatensor={}
 
         model.next()
-
-        display_comp_status(counter, batch_error.detach().item(), error, test_f1, best_loss, best_f1, lr,test_accuracy=accuracy, best_accuracy = best_accuracy,train_moving_loss=merror)
+        if not noreprint:
+            display_comp_status(counter, batch_error.detach().item(), error, test_f1, best_loss, best_f1, lr,test_accuracy=accuracy, best_accuracy = best_accuracy,train_moving_loss=merror)
+        else:
+            print('interation:',counter,'  loss:',error,' best loss:',best_loss, ' lr:',lr,' acc:',accuracy, end='\r')
         counter = counter + 1
         moving_avg = moving_avg + batch_error.detach().item()
        # batch_error = 0
@@ -2821,14 +3231,14 @@ def _compile(model:dNodeList, opt="Adam", size=50, lr=0.01,avg_steps = None,thre
 #             model.LoadState('tempmodel.tmp')
 #             continue
            moving_avg = 0
-         #  test_model.batch_size=21
+           test_model.batch_size=test_batch_size
 #           all_to_gpu(model)
            torch.set_grad_enabled(False)
            start = time.time()
            test_model.PointerNode=None
-           test_model.Predict2(target=test_model.class_target, basemode='eval')
+           test_model.Predict2(target=test_model.class_target, basemode='eval', rewrite=True)
            end = time.time()
-           print("Time to execute:",end-start)
+           #print("Time to execute:",end-start)
            #print("test error", test_model.total_loss)
            #print(test_model.f1)
            if hasattr(test_model, "test_f1"):
@@ -2849,8 +3259,10 @@ def _compile(model:dNodeList, opt="Adam", size=50, lr=0.01,avg_steps = None,thre
 #rt /= args.world_size
            stats = open('stats.csv','a')
 
-           stats.write(str(step) + '\t' + str(merror) + '\t' + str(error) + '\t' + str(accuracy) + '\n' )
+           stats.write(str(step) + '\t' + str(merror/ avg_steps) + '\t' + str(error / (len(test_model)/test_model.batch_size)) + '\t' + str(accuracy) + '\n' )
            stats.close()
+
+
            if best_loss > error:
 #           if True:
                best_loss = error
@@ -2858,6 +3270,14 @@ def _compile(model:dNodeList, opt="Adam", size=50, lr=0.01,avg_steps = None,thre
                best_accuracy = accuracy
                torch.save(model.state_dict(), "tempmodel.tmp")
                gc.collect()
+       #    else:
+               #q = model.ConvertTo()
+               #q.Shuffle()
+               #model.clear()
+               #for x in q.Unroll():
+               #   model.append(x)
+               #torch.save(model.state_dict(), str(best_loss)[0:3]+"tempmodel.tmp")
+               #model.LoadState('tempmodel.tmp')
            if step in model_save_step:
                print('Save model. Step: ',step)
                torch.save(model.state_dict(),filename + str(step) + ".mod")
@@ -2865,7 +3285,7 @@ def _compile(model:dNodeList, opt="Adam", size=50, lr=0.01,avg_steps = None,thre
            
 
            if prev_error<error:
-            lr = lr * 0.98
+            lr = lr * decay
             #optimizer = torch.optim.Adam(model.parameters(), lr = lr, weight_decay = 1e-5)
 
         #    print("new lr is ",lr)
@@ -2881,8 +3301,14 @@ def _compile(model:dNodeList, opt="Adam", size=50, lr=0.01,avg_steps = None,thre
                     f = open("post_results.txt","a")
                     f.write(str(step) + '\t' + r+'\n')
                     f.close()
+           gc.collect()
            torch.cuda.empty_cache()
            torch.set_grad_enabled(True)
+          # q = model.ConvertTo()
+          # q.Shuffle()
+          ## model.clear()
+          # for x in q.Unroll():
+          #    model.append(x)
     print()
     print()
     print()
