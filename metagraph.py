@@ -3215,7 +3215,7 @@ def _compile(model:dNodeList, opt="Adam", size=50, lr=0.01,avg_steps = None,thre
         if not noreprint:
             display_comp_status(counter, batch_error.detach().item(), error, test_f1, best_loss, best_f1, lr,test_accuracy=accuracy, best_accuracy = best_accuracy,train_moving_loss=merror)
         else:
-            print('interation:',counter,'  loss:',error,' best loss:',best_loss, ' lr:',lr,' acc:',accuracy, end='\r')
+            print('\r','interation:',counter,'  loss:',error,' best loss:',best_loss, ' lr:',lr,' acc:',accuracy, end='')
         counter = counter + 1
         moving_avg = moving_avg + batch_error.detach().item()
        # batch_error = 0
