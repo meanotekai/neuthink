@@ -12,7 +12,7 @@ import torch.nn as nn
 import Stemmer
 from neuthink.wordvectors import word_vector as wv
 import neuthink.nlptools.entities as en
-from typing import Dict
+from typing import Dict, Callable
 from neuthink.functional import usplit
 import neuthink.functional as fp
 import os
@@ -48,6 +48,7 @@ class MetaText(object):
         self.model = ParentModel
         self.graph = ParentModel.parent_graph
         self.vecs = None
+        self.d = {}
         self.alphabet = None
         self.alphabet_rus_char = 'ЙЦУКЕНГШЩЗХЪЭЖДЛОРПАВЫФЯЧСМИТЬБЮ'
 #        self.alphabet_rus_char = 'ЙЦУКЕНГШЩЗХЪЭЖДЛОРПАВЫФЯЧСМИТЬБЮЁQWERTYUIOPLKJHGFDSAZXCVBNM'
@@ -61,7 +62,10 @@ class MetaText(object):
         self.alphabet_all_char = self.alphabet_all_char.lower() + self.alphabet_all_char
         self.alphabet_all_char = self.alphabet_all_char + '»«—1234567890-=][()<>?!^*.,:"%+/ \n'
         #self.alphabet_rus_char = self.alphabet_rus_char + '1234567890:;-=][()<>?!^*.,"%+/ \n'
+        self.alphabet_all_ext_char = self.alphabet_all_char + "'" + ';&@${}_\t'
+
         self.alphabet_all_char = str2dict(self.alphabet_all_char)
+        self.alphabet_all_ext_char = str2dict(self.alphabet_all_ext_char)
 
         self.alphabet_en_char = 'QWERTYUIOPLKJHGFDSAZXCVBNM"'
         self.alphabet_en_char = self.alphabet_en_char.lower() + self.alphabet_en_char
@@ -70,7 +74,15 @@ class MetaText(object):
         self.alphabet_en_char = str2dict(self.alphabet_en_char)
 
 
-    def VectorizeLookupChars(self, source='chunk',target='chunk_tensor', alphabet=None, filename=None, gen_classes_train=True, one_class_per_batch = False, random_seq_len = True, precision="normal"):
+    def make_random_range(self, max_size):
+        shift = random.randint(0, (max_size/2)-1)
+        start = shift
+        end = shift+max_size/4
+      #  print(end-start)
+      #  print(end)
+        return (int(start), int(end))
+
+    def VectorizeLookupChars(self, source='chunk',target='chunk_tensor', alphabet=None, filename=None, gen_classes_train=True, one_class_per_batch = False, random_seq_len = True, precision="normal", future=False):
         def get_index(char:str, alphabet) -> int:
             if char in alphabet:
                 return alphabet[char]
@@ -95,9 +107,9 @@ class MetaText(object):
                 alphabet = self.alphabet_rus_char
             self.alphabet = alphabet
 #            print("inalpha",self.alphabet)
-            print(len(self.alphabet))
+      #      print(len(self.alphabet))
             self.model.resources['alphabet' + target] = alphabet
-            self.model.record("Text.VectorizeLookupChars",['source','target','alphabet', 'gen_classes_train', 'one_class_per_batch', 'random_seq_len'],[source,target,'alphabet' + target, gen_classes_train, one_class_per_batch, random_seq_len])
+            self.model.record("Text.VectorizeLookupChars",['source','target','alphabet', 'gen_classes_train', 'one_class_per_batch', 'random_seq_len','future'],[source,target,'alphabet' + target, gen_classes_train, one_class_per_batch, random_seq_len,future])
 
 #            else:
 #                self.alphabet = alphabet
@@ -113,27 +125,47 @@ class MetaText(object):
         start_i = 0
 
         if self.model.mode=='train':
-            #if random_seq_len:
-            #    start_i = random.randint(0,30)
-            start_i = 0
+            if random_seq_len:
+                start_i = random.randint(0,40)
+#            start_i = 0
         nodes = self.model[self.model.index: self.model.index + self.model.batch_size]
 #        print("*********NM********")
 #        print(self.model.batch_size)
 #        print(self.model.index)
 #        print(len(self.model))
 
+#        for node in nodes:
+#          node[source] = node[source][:start_i] +  random.choice([x for x in 'qwertyuioplkjhgfdszxcvbnm,']) + node[source][start_i+1:]
+#        start_i = random.randint(0,60)
+#        for node in nodes:
+#          node[source] = node[source][:start_i] +  random.choice([x for x in 'qwertyuioplkjhgfdszxcvbnm,']) + node[source][start_i+1:]
 
 
-        data_matrix = [[get_index(x, alphabet) for x in node[source][start_i:]] for node in nodes]
+        if future:
+            nodes = self.model[self.model.index: self.model.index + self.model.batch_size]
+            for x in nodes:
+                x["range"] = (0,300)#self.make_random_range(len(x[source]))
+            data_matrix = [[get_index(x, alphabet) for x in node[source][ node["range"][0]:node["range"][1]]][::-1] for node in nodes]
+            future_matrix = [[get_index(x, alphabet) for x in node[source][node["range"][1]:node["range"][1]+int(len(node[source])/2)]] for node in nodes]
+        else:
+            nodes = self.model[self.model.index: self.model.index + self.model.batch_size]
+            data_matrix = [[get_index(x, alphabet) for x in node[source][start_i:]] for node in nodes]
         #print(len(data_matrix))
         #print(len(data_matrix[1]))
 #        print(data_matrix)
         tensor = torch.from_numpy(np.array(data_matrix))
+        if future:
+            future_tensor = torch.from_numpy(np.array(future_matrix))
         #print(tensor.size())
+     #   print(len(alphabet))
         if gen_classes_train and (self.model.mode == 'train' or self.model.mode == 'design' or self.model.mode=='eval'):
             if not one_class_per_batch:
-                classes = tensor[: ,1:]
-                tensor = tensor[:,:-1]
+       #         print(future_tensor.shape)
+                classes = tensor[: ,1:] if not future else future_tensor
+       #         print(classes.shape)
+       #         print(tensor.shape)
+                if not future:
+                   tensor = tensor[:,:-1]
                 self.model.metatensor["classes"] = classes
 
             if one_class_per_batch:
@@ -360,6 +392,7 @@ class MetaText(object):
                 if len(words)>max_words:
                     words = words[:max_words]
                 if self.model.PointerNode is None:
+                    #print('Lookup len words: ',len(words))
                     self.model.batch_size = len(words)
                 indices = [self.vecs.get_word_index(x) for x in words]
             else:
@@ -404,10 +437,11 @@ class MetaText(object):
         if self.model.mode=="design":
            self.model.record("Text.VectorizeLookup",['source','target','embeddings','stem','batch_mode','max_len'],[source,target,embeddings,stem,batch_mode,max_len])
         self.model.last_call = target
+        #print('batch_size Lookup: ',self.model.batch_size)
         return self
 
-    def GetEntities(self, wordname="word", classname="type"):
-       en.entity_parser(self.model,classname,wordname)
+    def GetEntities(self, wordname = "word", classname = "tag", add_type_name = False):
+       en.entity_parser(self.model, classname, wordname, add_type_name = add_type_name)
        return self.model.parent_graph.Match({"type":"entity"})
 
 
@@ -555,6 +589,31 @@ class MetaText(object):
         self.model.last_call = target
         return self
     
+    def ExtendSpanForward(self, startfunc:Callable, markfunc:Callable, target_tag_value:str, tagname='tag'):
+        state = 0
+        for i,x in enumerate(self.model):
+            if startfunc(x, self.model, i) and state==0:
+                state = 1
+            if markfunc(x, self.model, i) and state==1:
+                x[tagname] = target_tag_value
+            else:
+                state=0
+
+    def ExtendSpanBackward(self, startfunc:Callable, markfunc:Callable, target_tag_value:str, tagname='tag'):
+        state = 0
+        data = self.model[::-1]
+        for i,x in enumerate(data):
+            if startfunc(x, data, i) and state==0:
+                state = 1
+            elif markfunc(x, data, i) and state==1:
+                x[tagname] = target_tag_value
+            else:
+                state=0
+
+    def ExtendSpan(self, startfunc:Callable, markfunc:Callable, target_tag_value:str, tagname='tag'):
+        self.ExtendSpanForward(startfunc, markfunc, target_tag_value, tagname='tag')
+        self.ExtendSpanBackward(startfunc, markfunc, target_tag_value, tagname='tag')
+
     def MarkSpan(self, tagname, start_tag, end_tag, name):
        state = False 
        for i,x in enumerate(self.model):
@@ -569,7 +628,8 @@ class MetaText(object):
            #  print(name)
              self.model[i][tagname] = name
     
-    def Tokenize(self,source="sentence", wordname="word", make_sent_node=False):
+
+    def Tokenize(self,source="sentence", wordname="word", make_sent_node=False, track=True):
         '''tokenizes text in specified source and returns unrolled result
         Args:
         source - where to get text
@@ -577,21 +637,49 @@ class MetaText(object):
         make_sent_node - make a separate node for sentence or connect words directly
         
         '''
+        if self.model.mode =="design" and track:
+           self.model.record("Text.Tokenize",['source','wordname','make_sent_node','track'], [source, wordname,make_sent_node,track])
+
         for x in self.model:
             if make_sent_node:
                 sent_node = Node(x.parent_graph,{"type":"sentence","name":source})
                 x.Connect(sent_node)
             else:
                 sent_node = x
-            Tokenize(x[source],wordname = "word",sentence=sent_node)
-        return self.model.Unroll()
+            Tokenize(x[source],wordname = "word",sentence=sent_node,maxwords=100000,make_sentences=False)
+        self.res = self.model.Unroll()
+        return self
 
-    def Ngrams(self, size, wordname = "word"):
-        d ={}
-        for i in range(len(self.model)-3):
-            ngram = self.model[i][wordname] + " " + self.model[i+1][wordname]
-            d[ngram] = d.get(ngram,0) + 1
-        return d
+    def Lower(self, source:str="chunk"):
+        if self.model.mode =='design':
+            self.model.record("Text.Lower",['source'],[source])
+        for x in self.model:
+            x[source] = x[source].lower()
+        return self
+
+        
+    def Ngrams(self, size:int=1, source:str = "word", clean=False):
+        if self.model.mode =='design':
+           self.d ={}
+           self.model.record("Text.Ngrams",['source','size'],[source, size])
+        if self.model.mode =='eval':
+           self.d={}
+        data = self.model.Unroll()
+        for i in range(len(data)-(size-1)):
+            if size==2:
+                if len(data[i][source])>2 and len(data[i+1][source])>2:
+                    ngram = data[i][source] + " " + data[i+1][source]
+                else:
+                    ngram=''
+            if size==1:
+                if len(data[i][source])>2:
+                    ngram = data[i][source]
+                else:
+                    ngram=''
+            if ngram!='':
+                self.d[ngram] = self.d.get(ngram,0) + 1
+        self.model.res = self.d
+        return self.d
 
     def GetWordsInSpan(self,start,stop):
         l = []
@@ -670,6 +758,49 @@ class MetaText(object):
             else:
                 x[target] = 'other'
 
+    def RefillEntities(self,classname='tag'):
+        self.model.mode='predict'
+        ents = self.model.parent_graph.Match({'type':'entity'})['text']
+        from neuthink import prefixtree as pt
+        tree, search = pt.make_prefix_tree(ents, case_sensitive=False)
+        found_ents = pt.find_ents(self.model, tree, search, classname, case_sensitive=False)
+
+
+    def FromText(self, filename:str, chunk_size:int = 300, input_mode = 'char', maxlines:int=0):
+        '''loads text from file, divided by evenly sized string chunks
+        important: this function discards last chunk
+        '''
+    
+        if self.model.mode == 'design':
+            self.model.record("Text.FromText",['filename','chunk_size','input_mode','maxlines'],[filename,chunk_size,input_mode,maxlines])
+            f = open(filename, encoding='utf-8')
+            self.fileobject = f
+            
+        self.model.clear()
+        self.model.parent_graph = Graph()
+        self.graph = self.model.parent_graph
+        eof_reached = False
+        #this is memory optimized read, that reads file into memory only once
+        #so we have to use while loop
+        self.model.resources['input_mode'] = input_mode
+        i = 0
+        buffer_new = ''
+        while not eof_reached and (maxlines==0 or i<maxlines):
+              buffer = self.fileobject.read(chunk_size)
+              if buffer=='':  eof_reached=True
+                
+              if len(buffer)==chunk_size:
+                    if input_mode == "tokens":                        
+                        buffer = buffer_new + buffer
+                        buffer_pos = len(buffer) - buffer[::-1].index(' ')
+                        buffer_new, buffer = buffer[buffer_pos:],buffer[:buffer_pos]
+                        
+                    self.model.append(Node(self.model.parent_graph,{"chunk":buffer,"type":'sentence'}))
+                    i = i + 1
+              
+        self.model.completed =  eof_reached
+            
+
 def MakeBPEDict(filename:str, model_prefix:str, dict_size:int):
         """Make BPE dictionary from textfile
 
@@ -699,6 +830,14 @@ def BPETokenize(text:str, modelname:str, sp=None)->str:
     enc = sp.EncodeAsPieces(text)
     enc = ' '.join(enc)
     return enc,sp
+
+
+def FromText(filename:str, chunk_size:int = 300, input_mode = 'char', maxlines:int=0):
+    import neuthink.metagraph as m
+    graph = Graph()
+    all_words :  m.dNodeList = m.dNodeList(graph)
+    all_words.Text.FromText(filename, chunk_size, input_mode = input_mode, maxlines=maxlines)
+    return all_words.Text
 
 
 def LoadWords(filename, separator=" ", default_class="other"):
@@ -744,21 +883,29 @@ def LoadWords(filename, separator=" ", default_class="other"):
 
                 #less words then colums - fill with default class if given
 
+def new_check_start_sentence(word_list, i):
+    """ исправлена ошибка когда предложения начинающиеся с одной заглавной буквы не считались началом предложения """
+    next_word = word_list[i + 1][0] if i+1 < len(word_list) else ' '
+    pred_word = word_list[i - 1][0]
+    initials = len(next_word) == 1 and (next_word[0].istitle() and word_list[i + 2][0] == '.' and next_word[0].isalpha()) or (pred_word[0].istitle() and word_list[i][0] == '.' and pred_word[0].isalpha())
+    return not initials and next_word[0].istitle()
+    
 
-def Tokenize(text:str, wordname='word', sentence=None, maxwords=1000,make_sentences=True, sentence_separator='.',keep_new_line=False):
+def Tokenize(text:str, wordname='word', sentence=None, maxwords=1000,make_sentences=True, sentence_separators=['.', '?', '!', ';' ],keep_new_line=False, separators=[],graph=None, check_token=True):
    '''Tokenizes text into NodeList of words with their positions, also can make sentence layer (group words into sentences)'''
 
    import neuthink.metagraph as m
-   graph = Graph()
+   if graph is None:
+    graph = Graph()
    words :  m.dNodeList = m.dNodeList(graph)
-   word_list = usplit(text,keep_new_line=keep_new_line)#text.replace('.',' . ').replace(',',' , ').replace('!',' ! ').replace(':', " : ").replace('"',' " ').replace('-', ' - ').replace('?',' ? ')
+   word_list = usplit(text,keep_new_line=keep_new_line, separators=separators)#text.replace('.',' . ').replace(',',' , ').replace('!',' ! ').replace(':', " : ").replace('"',' " ').replace('-', ' - ').replace('?',' ? ')
    original_text = Node(graph, {"type":"original_text", "text":text})
    #word_list = text.split()
    if sentence is None:
       sentence = Node(graph,{"type":"sentence"})
       original_text.Connect(sentence)
 
-   for x in word_list:
+   for i, x in enumerate(word_list):
          word = Node(sentence.parent_graph, {})
          word[wordname] = x[0]
          word["pos_start"] = x[1]
@@ -769,22 +916,27 @@ def Tokenize(text:str, wordname='word', sentence=None, maxwords=1000,make_senten
          if len(sentence.Children({}))>maxwords:
             sentence = Node(graph,{"type":"sentence"})
             original_text.Connect(sentence)
-         if make_sentences:
-             if word[wordname]==sentence_separator:
+         if make_sentences: 
+            old_check_start_sentence = i < len(word_list) - 2 and len(word_list[i + 1][0])>1 and len(word_list[i - 1][0])>1 and word_list[i + 1][0][0].istitle()
+            check = new_check_start_sentence(word_list, i) if check_token else old_check_start_sentence
+            if check and word[wordname] in sentence_separators:
                  sentence = Node(graph,{"type":"sentence"})
                  original_text.Connect(sentence)
    return words
 
-def SaveWords(nodelist, filename, separator=" "):
+def SaveWords(nodelist, filename, separator=" ", with_column_names = True, columns = False, mode = 'w'):
+    if not columns:
+       columns = list( filter( lambda x: x!= 'id', dict(nodelist[0]).keys()))
     fields = nodelist[0].dict.keys()
-    f = open(filename , 'w', encoding='utf-8')
-    f.write(separator.join([y for y in fields if (type(nodelist[0][y]) is str) and y!='id'])+'\n')
+    f = open(filename , mode, encoding='utf-8')
+    if with_column_names:
+        f.write(separator.join([y for y in fields if (type(nodelist[0][y]) is str) and y!='id' and y in columns])+'\n') 
     for x in nodelist:
-        f.write(separator.join([x[y] for y in fields if (type(x[y]) is str) and not (y=='id')]) +'\n')
+        f.write(separator.join([x[y] for y in fields if (type(x[y]) is str) and not (y=='id') and (y in columns)]) +'\n')
     f.close()
 
 
-def SaveColumn(sentences, filename:str, separator=" ", column_list=[],
+def SaveColumn(sentences, filename:str, separator=" ", column_list=[], overwrite: bool = True,
                         ofs:int=None, lim:int=None, word_name='word') -> None:
             '''saves view data to column file
 
@@ -801,9 +953,14 @@ def SaveColumn(sentences, filename:str, separator=" ", column_list=[],
 
             if len(column_list) == 0:
                 column_list = sentences.columns
-            f = open(filename, 'w')
 
-            f.write("  ".join(column_list) + "\n")
+            if not os.path.exists(filename) or overwrite:
+                f = open(filename, 'w') 
+                f.write(separator.join(column_list) + "\n")
+            else:
+                f = open(filename, 'a')
+                # f.write("<STOP> \n")
+
             for sentence in sentences[ofs:lim]:
                     words = sentence.Children({'type':word_name})
                     for word in words:
@@ -811,9 +968,9 @@ def SaveColumn(sentences, filename:str, separator=" ", column_list=[],
                         #if word["word"].strip() != "":
                         for cl in column_list:
                                 if cl in word:
-                                    save_str = save_str + str(word[cl]) + "  "
+                                    save_str = save_str + str(word[cl]) + separator
                                 else:
-                                    save_str = save_str + "other" + "  "
+                                    save_str = save_str + "other" + separator
                         f.write(save_str + "\n")
                     f.write("<STOP> \n")
 
@@ -865,7 +1022,7 @@ def LoadText(filename:str,chunk_size:int = 300, input_mode = 'char', maxlines:in
     graph = Graph()
     chunks :  m.dNodeList = m.dNodeList(graph) if nodeobject is None else nodeobject
     chunks.clear()
-    f = open(filename, encoding='utf-8') if fileobject is None else fileobject
+    f = open(filename, encoding='utf-8', errors='ignore') if fileobject is None else fileobject
     eof_reached = False
     #this is memory optimized read, that reads file into memory only once
     #so we have to use while loop
@@ -904,7 +1061,7 @@ def LoadText(filename:str,chunk_size:int = 300, input_mode = 'char', maxlines:in
              ind = string[::-1].index(" ")
             except:
              ind = len(string)-1
-            ind = string[::-1].index(" ")
+            #ind = string[::-1].index(" ")
 
             string_buffer = string[-ind:]
             string = string[:-ind]
@@ -926,23 +1083,31 @@ def LoadText(filename:str,chunk_size:int = 300, input_mode = 'char', maxlines:in
                     eof_reached=True
         return chunks
 
-def LoadCSV(filename:str,separator:str=","):
+def LoadCSV(filename:str,separator:str=",",result_type:str='dNodeList'):
     '''loads csv into nodelist using CSV reader'''
     import neuthink.metagraph as m
     print ("DEPRECATION WARNING: CSV reader in metatext is deprecated, use CSV reader in metastruct module")
 
     graph = Graph()
-    lines :  m.dNodeList = m.dNodeList(graph)
+    if result_type == 'NodeList':
+        lines :  NodeList = NodeList(graph)
+    else:
+        lines :  m.dNodeList = m.dNodeList(graph)
     f = open(filename)
     csv_reader = csv.reader(f,delimiter=separator)
     first_column = True
+    i = 0 
     for row in csv_reader:
+        i = i + 1
         if first_column:
             column_names = row
          #   print(column_names)
             first_column = False
         else:
-            _node = {column_names[i]:row[i] for i in range(len(row))}
+            if len(column_names) != len(row):
+               print("ERROR on line ", i, "number of elements does not match with the number of column titles")
+            else:
+              _node = {column_names[i]:row[i] for i in range(len(row))}
             node = Node(graph,_node)
             lines.append(node)
     return lines
@@ -1012,17 +1177,21 @@ def LoadAnnFolder(folder_name: str, ann_ext: str = 'ann'):
         #Text.SaveColumn(tokens.ConvertTo(),core_name+'.conll', column_list=['word','termtag'])
 
 
-def LoadColumn(filename: str, separator=" ",stop_word="<STOP>", maxlen=1000, strip_spaces=False, default_class='other', expand=False, maxwords=None, parent_graph = None):
+def LoadColumn(filename: str, separator=" ",stop_word="<STOP>", maxlen=1000, strip_spaces=False, column_names=None, default_class='other', expand=False, maxwords=None, parent_graph = None, fileobject=None, lazy=True, sent_object=None):
 
         '''loads sentence view from file with columns file'''
-        #TODO: needs simplification
+        #TODO: really needs simplification
         import neuthink.metagraph as m
         graph = Graph() if parent_graph == None else parent_graph
-        sentences :  m.dNodeList = m.dNodeList(graph)
-
+        sentences :  m.dNodeList = m.dNodeList(graph) if sent_object is None  else sent_object
+        sentences.clear()
+       
         print(sentences.save_func)
-        f = open(filename, "r")
-        column_names = split(f.readline().strip(), separator)
+        f = open(filename, encoding='utf-8', errors='ignore') if fileobject is None else fileobject
+        if column_names is None:
+         column_names = split(f.readline().strip(), separator)
+        else:
+            pass 
         cur_sentence = Node(graph, {})
         cur_sentence["words"] = NodeList(graph)
         cur_sentence['type']='sentence'
@@ -1033,7 +1202,15 @@ def LoadColumn(filename: str, separator=" ",stop_word="<STOP>", maxlen=1000, str
         sentences.save_func = save_func
         line_num = 0
         #sentences.extended = expand
-        for line in f:
+        last_pos = f.tell()
+
+        line= f.readline()    
+        if line=='':  
+            f = open(filename, encoding='utf-8', errors='ignore')
+            line= f.readline()    
+            line= f.readline()
+
+        while line:
             if strip_spaces:
                line = line.strip()
                line = line.replace("\ufeff","")
@@ -1042,6 +1219,9 @@ def LoadColumn(filename: str, separator=" ",stop_word="<STOP>", maxlen=1000, str
 
             line_num  = line_num  + 1
             if (maxwords is not None) and (line_num>maxwords):
+                if lazy:
+                    sentences.loadfunc = lambda : LoadColumn(filename, separator=separator,column_names=column_names, strip_spaces=strip_spaces, stop_word=stop_word, maxlen=maxlen, default_class=default_class, maxwords=maxwords, fileobject=f, sent_object= sentences )
+                    return sentences
                 return sentences
             if "<STOP>" in line or line == ""  or  len(cur_sentence["words"])>maxlen:
                 if len(cur_sentence["words"]) > 0:
@@ -1120,6 +1300,7 @@ def LoadColumn(filename: str, separator=" ",stop_word="<STOP>", maxlen=1000, str
 
                 cur_sentence["words"].append(word)
                 cur_sentence.Connect(word)
+            line= f.readline()   
         if len(cur_sentence["words"]) > 0:
             sentences.append(cur_sentence)
         return sentences
@@ -1135,8 +1316,18 @@ def make_sent_from_node(node:Node[str, str], wordname="word")->str:
 
     words = node.Children({'type':wordname})
     sent = " ".join([x[wordname] for x in words])
-    sent = sent.replace(" ,",",").replace(" .",".").replace(" !","!").replace(" ?","?").replace("( ","(").replace(" )",")")
+    sent = sent.replace(" ,",",").replace(" .",".").replace(" !","!").replace(" ?","?").replace("( ","(").replace(" )",")").replace(" / ","/")
     return sent
+
+def Text2NodeList(text: str, field_name="text"):
+        graph = Graph() 
+        import neuthink.metagraph as m
+        sentences :  m.dNodeList = m.dNodeList(graph)
+        cur_sentence = Node(graph, {"type":"text",field_name:text})
+        sentences.append(cur_sentence)
+        return sentences
+    
+
 
 
 def contains_term(termset, text, stem=True, lang='russian'):
