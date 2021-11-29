@@ -664,7 +664,7 @@ class MetaText(object):
        #    self.model.record("Text.Ngrams",['source','size'],[source, size])
        # if self.model.mode =='eval':
        #    self.d={}
-        data = self.model.Unroll()
+        #data = self.model.Unroll()
         for i in range(len(data)-(size-1)):
             if size==2:
                 if (len(data[i][source])>2 and len(data[i+1][source])>2) or (not clean):
