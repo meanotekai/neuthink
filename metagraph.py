@@ -2417,11 +2417,11 @@ class dNodeList(TrackedNodeList,torch.nn.Module):
          if self.mode=='design':
              #build feature list
              d = {}
-             if len(self)<200000:
+             if len(self)<20000:
               all_features_list = list(set(reduce(lambda x,y:x+y,[funcname(self,index,source) for index in range(len(self))])))
              else:
               print("reduced feature estimation")
-              all_features_list = list(set(reduce(lambda x,y:x+y,[funcname(self,index,source) for index in range(50000)])))
+              all_features_list = list(set(reduce(lambda x,y:x+y,[funcname(self,index,source) for index in range(20000)])))
 
              #for speed of access will make a dictionary
              for i,x in enumerate(all_features_list):
