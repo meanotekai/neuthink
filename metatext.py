@@ -659,15 +659,15 @@ class MetaText(object):
 
         
     def Ngrams(self, size:int=1, source:str = "word", clean=False):
-        if self.model.mode =='design':
-           self.d ={}
-           self.model.record("Text.Ngrams",['source','size'],[source, size])
-        if self.model.mode =='eval':
-           self.d={}
+       # if self.model.mode =='design':
+       #    self.d ={}
+       #    self.model.record("Text.Ngrams",['source','size'],[source, size])
+       # if self.model.mode =='eval':
+       #    self.d={}
         data = self.model.Unroll()
         for i in range(len(data)-(size-1)):
             if size==2:
-                if len(data[i][source])>2 and len(data[i+1][source])>2 or (not clean):
+                if (len(data[i][source])>2 and len(data[i+1][source])>2) or (not clean):
                     ngram = data[i][source] + " " + data[i+1][source]
                 else:
                     ngram=''
