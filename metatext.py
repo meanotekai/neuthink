@@ -663,7 +663,7 @@ class MetaText(object):
        #    self.d ={}
        #    self.model.record("Text.Ngrams",['source','size'],[source, size])
        # if self.model.mode =='eval':
-       #    self.d={}
+        self.d={}
         #data = self.model.Unroll()
         data = self.model
         for i in range(len(data)-(size-1)):
